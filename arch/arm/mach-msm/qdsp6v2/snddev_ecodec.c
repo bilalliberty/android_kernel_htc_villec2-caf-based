@@ -1,4 +1,4 @@
-/* Copyright (c) 2010-2012, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2010-2012, Code Aurora Forum. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -28,16 +28,21 @@
 
 #define ECODEC_SAMPLE_RATE 8000
 
-/* Context for each external codec device */
+#ifdef CONFIG_MACH_VILLEC2
+#undef pr_info
+#undef pr_err
+#define pr_info(fmt, ...) pr_aud_info(fmt, ##__VA_ARGS__)
+#define pr_err(fmt, ...) pr_aud_err(fmt, ##__VA_ARGS__)
+#endif
+
 struct snddev_ecodec_state {
 	struct snddev_ecodec_data *data;
 	u32 sample_rate;
 };
 
-/* Global state for the driver */
 struct snddev_ecodec_drv_state {
 	struct mutex dev_lock;
-	int ref_cnt;		/* ensure one rx device at a time */
+	int ref_cnt;		
 	struct clk *ecodec_clk;
 };
 
@@ -56,7 +61,19 @@ static int aux_pcm_gpios_request(void)
 {
 	int rc = 0;
 
-	pr_debug("%s\n", __func__);
+#ifdef CONFIG_MACH_VILLEC2
+	uint32_t bt_config_gpio[] = {
+		GPIO_CFG(the_aux_pcm_state.dout, 1, GPIO_CFG_OUTPUT, GPIO_CFG_NO_PULL, GPIO_CFG_2MA),
+		GPIO_CFG(the_aux_pcm_state.din, 1, GPIO_CFG_INPUT, GPIO_CFG_NO_PULL, GPIO_CFG_2MA),
+		GPIO_CFG(the_aux_pcm_state.syncout, 1, GPIO_CFG_OUTPUT, GPIO_CFG_NO_PULL, GPIO_CFG_2MA),
+		GPIO_CFG(the_aux_pcm_state.clkin_a, 1, GPIO_CFG_OUTPUT, GPIO_CFG_NO_PULL, GPIO_CFG_2MA),
+	};
+
+	gpio_tlmm_config(bt_config_gpio[0], GPIO_CFG_ENABLE);
+	gpio_tlmm_config(bt_config_gpio[1], GPIO_CFG_ENABLE);
+	gpio_tlmm_config(bt_config_gpio[2], GPIO_CFG_ENABLE);
+	gpio_tlmm_config(bt_config_gpio[3], GPIO_CFG_ENABLE);
+#else
 	rc = gpio_request(the_aux_pcm_state.dout, "AUX PCM DOUT");
 	if (rc < 0) {
 		pr_err("%s: GPIO request for AUX PCM DOUT failed\n", __func__);
@@ -88,17 +105,32 @@ static int aux_pcm_gpios_request(void)
 		gpio_free(the_aux_pcm_state.syncout);
 		return rc;
 	}
+#endif
 
+	pr_debug("%s\n", __func__);
 	return rc;
 }
 
 static void aux_pcm_gpios_free(void)
 {
-	pr_debug("%s\n", __func__);
+#ifdef CONFIG_MACH_VILLEC2
+	uint32_t bt_config_gpio[] = {
+		GPIO_CFG(the_aux_pcm_state.dout, 0, GPIO_CFG_OUTPUT, GPIO_CFG_NO_PULL, GPIO_CFG_2MA),
+		GPIO_CFG(the_aux_pcm_state.din, 0, GPIO_CFG_INPUT, GPIO_CFG_PULL_DOWN, GPIO_CFG_2MA),
+		GPIO_CFG(the_aux_pcm_state.syncout, 0, GPIO_CFG_OUTPUT, GPIO_CFG_NO_PULL, GPIO_CFG_2MA),
+		GPIO_CFG(the_aux_pcm_state.clkin_a, 0, GPIO_CFG_OUTPUT, GPIO_CFG_NO_PULL, GPIO_CFG_2MA),
+	};
+	gpio_tlmm_config(bt_config_gpio[0], GPIO_CFG_DISABLE);
+	gpio_tlmm_config(bt_config_gpio[1], GPIO_CFG_DISABLE);
+	gpio_tlmm_config(bt_config_gpio[2], GPIO_CFG_DISABLE);
+	gpio_tlmm_config(bt_config_gpio[3], GPIO_CFG_DISABLE);
+#else
 	gpio_free(the_aux_pcm_state.dout);
 	gpio_free(the_aux_pcm_state.din);
 	gpio_free(the_aux_pcm_state.syncout);
 	gpio_free(the_aux_pcm_state.clkin_a);
+#endif
+	pr_debug("%s\n", __func__);
 }
 
 static int get_aux_pcm_gpios(struct platform_device *pdev)
@@ -106,7 +138,7 @@ static int get_aux_pcm_gpios(struct platform_device *pdev)
 	int rc = 0;
 	struct resource *res;
 
-	/* Claim all of the GPIOs. */
+	
 	res = platform_get_resource_byname(pdev, IORESOURCE_IO, "aux_pcm_dout");
 	if (!res) {
 		pr_err("%s: failed to get gpio AUX PCM DOUT\n", __func__);
@@ -141,6 +173,12 @@ static int get_aux_pcm_gpios(struct platform_device *pdev)
 
 	the_aux_pcm_state.clkin_a = res->start;
 
+#ifdef CONFIG_MACH_VILLEC2
+	pr_aud_info("%s: dout = %u, din = %u , syncout = %u, clkin_a =%u\n",
+		__func__, the_aux_pcm_state.dout, the_aux_pcm_state.din,
+		the_aux_pcm_state.syncout, the_aux_pcm_state.clkin_a);
+#endif
+
 	return rc;
 }
 
@@ -148,6 +186,7 @@ static int aux_pcm_probe(struct platform_device *pdev)
 {
 	int rc = 0;
 
+	pr_aud_info("%s:\n", __func__);
 	rc = get_aux_pcm_gpios(pdev);
 	if (rc < 0) {
 		pr_err("%s: GPIO configuration failed\n", __func__);
@@ -293,6 +332,8 @@ static int snddev_ecodec_probe(struct platform_device *pdev)
 	struct msm_snddev_info *dev_info;
 	struct snddev_ecodec_state *ecodec;
 
+	pr_aud_info("%s:\n", __func__);
+
 	if (!pdev || !pdev->dev.platform_data) {
 		printk(KERN_ALERT "Invalid caller\n");
 		rc = -1;
@@ -326,7 +367,7 @@ static int snddev_ecodec_probe(struct platform_device *pdev)
 	msm_snddev_register(dev_info);
 
 	ecodec->data = pdata;
-	ecodec->sample_rate = ECODEC_SAMPLE_RATE;	/* Default to 8KHz */
+	ecodec->sample_rate = ECODEC_SAMPLE_RATE;	
 error:
 	return rc;
 }
@@ -340,6 +381,8 @@ int __init snddev_ecodec_init(void)
 {
 	int rc = 0;
 	struct snddev_ecodec_drv_state *drv = &snddev_ecodec_drv;
+
+	pr_aud_info("%s:\n", __func__);
 
 	mutex_init(&drv->dev_lock);
 	drv->ref_cnt = 0;
@@ -363,6 +406,8 @@ int __init snddev_ecodec_init(void)
 				__func__);
 		goto error_ecodec_platform_driver;
 	}
+
+	pr_aud_info("%s: done\n", __func__);
 
 	return 0;
 

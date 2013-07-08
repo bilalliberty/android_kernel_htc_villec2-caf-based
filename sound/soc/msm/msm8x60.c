@@ -1,4 +1,4 @@
-/* Copyright (c) 2010-2011, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2010-2011, Code Aurora Forum. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -32,6 +32,11 @@
 #include <mach/qdsp6v2/audio_dev_ctl.h>
 #include <mach/qdsp6v2/q6voice.h>
 
+#ifdef CONFIG_MACH_VILLEC2
+#include <linux/mfd/msm-adie-codec.h>
+#include "../../../arch/arm/mach-msm/qdsp6v2/snddev_icodec.h"
+#endif
+
 #define LOOPBACK_ENABLE		0x1
 #define LOOPBACK_DISABLE	0x0
 
@@ -48,10 +53,9 @@ static struct snd_kcontrol_new snd_msm_controls[];
 
 char snddev_name[AUDIO_DEV_CTL_MAX_DEV][44];
 #define MSM_MAX_VOLUME 0x2000
-#define MSM_VOLUME_STEP ((MSM_MAX_VOLUME+17)/100) /* 17 added to avoid
-						      more deviation */
-static int device_index; /* Count of Device controls */
-static int simple_control; /* Count of simple controls*/
+#define MSM_VOLUME_STEP ((MSM_MAX_VOLUME+17)/100) 
+static int device_index; 
+static int simple_control; 
 static int src_dev;
 static int dst_dev;
 static int loopback_status;
@@ -75,7 +79,7 @@ static int msm_v_call_info(struct snd_kcontrol *kcontrol,
 			struct snd_ctl_elem_info *uinfo)
 {
 	uinfo->type = SNDRV_CTL_ELEM_TYPE_INTEGER;
-	uinfo->count = 2; /* start, session_id */
+	uinfo->count = 2; 
 	uinfo->value.integer.min = 0;
 	uinfo->value.integer.max = SESSION_ID_BASE + MAX_VOC_SESSIONS;
 	return 0;
@@ -103,12 +107,24 @@ static int msm_v_call_put(struct snd_kcontrol *kcontrol,
 		return -EINVAL;
 	}
 
+#ifdef CONFIG_MACH_VILLEC2
+	if (start) {
+		pr_aud_info("[ALSA] msm_start_voice");
+		broadcast_event(AUDDEV_EVT_START_VOICE, DEVICE_IGNORE,
+							session_id);
+	} else {
+		pr_aud_info("[ALSA] msm_end_voice");
+		broadcast_event(AUDDEV_EVT_END_VOICE, DEVICE_IGNORE,
+							session_id);
+	}
+#else
 	if (start)
 		broadcast_event(AUDDEV_EVT_START_VOICE, DEVICE_IGNORE,
 							session_id);
 	else
 		broadcast_event(AUDDEV_EVT_END_VOICE, DEVICE_IGNORE,
 							session_id);
+#endif
 	return 0;
 }
 
@@ -116,7 +132,7 @@ static int msm_v_mute_info(struct snd_kcontrol *kcontrol,
 				struct snd_ctl_elem_info *uinfo)
 {
 	uinfo->type = SNDRV_CTL_ELEM_TYPE_INTEGER;
-	uinfo->count = 3; /* dir, mute, session_id */
+	uinfo->count = 3; 
 	uinfo->value.integer.min = 0;
 	uinfo->value.integer.max = SESSION_ID_BASE + MAX_VOC_SESSIONS;
 	return 0;
@@ -146,6 +162,9 @@ static int msm_v_mute_put(struct snd_kcontrol *kcontrol,
 		return -EINVAL;
 	}
 
+#ifdef CONFIG_MACH_VILLEC2
+	pr_aud_info("[ALSA] msm_set_voice_tx_mute: mute %d, session_id: %d\n", mute, session_id);
+#endif
 	return msm_set_voice_mute(dir, mute, session_id);
 }
 
@@ -153,7 +172,7 @@ static int msm_v_volume_info(struct snd_kcontrol *kcontrol,
 				struct snd_ctl_elem_info *uinfo)
 {
 	uinfo->type = SNDRV_CTL_ELEM_TYPE_INTEGER;
-	uinfo->count = 3; /* dir, volume, session_id */
+	uinfo->count = 3; 
 	uinfo->value.integer.min = 0;
 	uinfo->value.integer.max = SESSION_ID_BASE + MAX_VOC_SESSIONS;
 	return 0;
@@ -183,6 +202,9 @@ static int msm_v_volume_put(struct snd_kcontrol *kcontrol,
 		return -EINVAL;
 	}
 
+#ifdef CONFIG_MACH_VILLEC2
+	pr_aud_info("[ALSA] msm_set_voice_rx_vol: volume %d, session_id: %d\n", volume, session_id);
+#endif
 	return msm_set_voice_vol(dir, volume, session_id);
 }
 
@@ -190,7 +212,7 @@ static int msm_volume_info(struct snd_kcontrol *kcontrol,
 				struct snd_ctl_elem_info *uinfo)
 {
 	uinfo->type = SNDRV_CTL_ELEM_TYPE_INTEGER;
-	uinfo->count = 2; /* Volume */
+	uinfo->count = 2; 
 	uinfo->value.integer.min = 0;
 	uinfo->value.integer.max = 16383;
 	return 0;
@@ -211,6 +233,10 @@ static int msm_volume_put(struct snd_kcontrol *kcontrol,
 	int factor = ucontrol->value.integer.value[2];
 	u64 session_mask = 0;
 
+#ifdef CONFIG_MACH_VILLEC2
+	pr_aud_info("[ALSA] msm_set_volume: volume %d\n", volume);
+#endif
+
 	if (factor > 10000)
 		return -EINVAL;
 
@@ -219,16 +245,13 @@ static int msm_volume_put(struct snd_kcontrol *kcontrol,
 
 	volume = (MSM_VOLUME_STEP * volume);
 
-	/* Convert back to original decimal point by removing the 10-base factor
-	* and discard the fractional portion
-	*/
 
 	volume = volume/factor;
 
 	if (volume > MSM_MAX_VOLUME)
 		volume = MSM_MAX_VOLUME;
 
-	/* Only Decoder volume control supported */
+	
 	session_mask = (((u64)0x1) << session_id) << (MAX_BIT_PER_CLIENT * \
 				((int)AUDDEV_CLNT_DEC-1));
 	msm_vol_ctl.volume = volume;
@@ -243,7 +266,7 @@ static int msm_voice_info(struct snd_kcontrol *kcontrol,
 				struct snd_ctl_elem_info *uinfo)
 {
 	uinfo->type = SNDRV_CTL_ELEM_TYPE_INTEGER;
-	uinfo->count = 3; /* Device */
+	uinfo->count = 3; 
 
 	uinfo->value.integer.min = 0;
 	uinfo->value.integer.max = msm_snddev_devcount();
@@ -261,9 +284,22 @@ static int msm_voice_put(struct snd_kcontrol *kcontrol,
 	int set = ucontrol->value.integer.value[2];
 	u64 session_mask;
 
+#ifdef CONFIG_MACH_VILLEC2
+	int i = 0, j = 0;
+	struct snddev_icodec_state *icodec;
+	struct adie_codec_hwsetting_entry *rx_entry;
+	struct adie_codec_hwsetting_entry *tx_entry;
+
+	pr_aud_info("[ALSA] msm_route_voice: "
+		"tx %d, rx %d, set %d\n",
+		(int) ucontrol->value.integer.value[1],
+		(int) ucontrol->value.integer.value[0],
+		set);
+#else
 	if (!set)
 		return -EPERM;
-	/* Rx Device Routing */
+#endif
+	
 	rx_dev_id = ucontrol->value.integer.value[0];
 	rx_dev_info = audio_dev_ctrl_find_dev(rx_dev_id);
 
@@ -281,6 +317,29 @@ static int msm_voice_put(struct snd_kcontrol *kcontrol,
 	pr_debug("%s:route cfg %d STREAM_VOICE_RX type\n",
 		__func__, rx_dev_id);
 
+#ifdef CONFIG_MACH_VILLEC2
+	
+	
+	if (rx_dev_info->copp_id == PRIMARY_I2S_RX) {
+		icodec = (struct snddev_icodec_state *)rx_dev_info->private_data;
+		rx_entry = icodec->data->profile->settings;
+		j = icodec->data->profile->setting_sz;
+		if (set) {
+			for (i = 0; i < j; i++)
+				if (rx_entry[i].voc_action != NULL) {
+					rx_entry[i].actions = rx_entry[i].voc_action;
+					rx_entry[i].action_sz = rx_entry[i].voc_action_sz;
+			}
+		} else {
+			for (i = 0; i < j; i++)
+				if (rx_entry[i].midi_action != NULL) {
+					rx_entry[i].actions = rx_entry[i].midi_action;
+					rx_entry[i].action_sz = rx_entry[i].midi_action_sz;
+				}
+		}
+	}
+#endif
+
 	msm_set_voc_route(rx_dev_info, AUDIO_ROUTE_STREAM_VOICE_RX,
 				rx_dev_id);
 
@@ -290,7 +349,7 @@ static int msm_voice_put(struct snd_kcontrol *kcontrol,
 	broadcast_event(AUDDEV_EVT_DEV_CHG_VOICE, rx_dev_id, session_mask);
 
 
-	/* Tx Device Routing */
+	
 	tx_dev_id = ucontrol->value.integer.value[1];
 	tx_dev_info = audio_dev_ctrl_find_dev(tx_dev_id);
 
@@ -308,16 +367,49 @@ static int msm_voice_put(struct snd_kcontrol *kcontrol,
 	pr_debug("%s:route cfg %d %d type\n",
 		__func__, tx_dev_id, AUDIO_ROUTE_STREAM_VOICE_TX);
 
+#ifdef CONFIG_MACH_VILLEC2
+	
+	
+	if (tx_dev_info->copp_id == PRIMARY_I2S_TX) {
+		icodec = (struct snddev_icodec_state *)tx_dev_info->private_data;
+		tx_entry = icodec->data->profile->settings;
+		j = icodec->data->profile->setting_sz;
+		if (set) {
+			for (i = 0; i < j; i++)
+				if (tx_entry[i].voc_action != NULL) {
+					tx_entry[i].actions = tx_entry[i].voc_action;
+					tx_entry[i].action_sz = tx_entry[i].voc_action_sz;
+				}
+		} else {
+			for (i = 0; i < j; i++)
+				if (tx_entry[i].midi_action != NULL) {
+					tx_entry[i].actions = tx_entry[i].midi_action;
+					tx_entry[i].action_sz = tx_entry[i].midi_action_sz;
+				}
+		}
+	}
+#endif
+
 	msm_set_voc_route(tx_dev_info, AUDIO_ROUTE_STREAM_VOICE_TX,
 				tx_dev_id);
 
 	broadcast_event(AUDDEV_EVT_DEV_CHG_VOICE, tx_dev_id, session_mask);
 
+#ifdef CONFIG_MACH_VILLEC2
+	if (set) {
+		if (rx_dev_info->opened)
+			broadcast_event(AUDDEV_EVT_DEV_RDY, rx_dev_id,	session_mask);
+
+		if (tx_dev_info->opened)
+			broadcast_event(AUDDEV_EVT_DEV_RDY, tx_dev_id, session_mask);
+	}
+#else
 	if (rx_dev_info->opened)
 		broadcast_event(AUDDEV_EVT_DEV_RDY, rx_dev_id,	session_mask);
 
 	if (tx_dev_info->opened)
 		broadcast_event(AUDDEV_EVT_DEV_RDY, tx_dev_id, session_mask);
+#endif
 
 	return rc;
 }
@@ -326,7 +418,7 @@ static int msm_voice_get(struct snd_kcontrol *kcontrol,
 				struct snd_ctl_elem_value *ucontrol)
 {
 	ucontrol->value.integer.value[0] = 0;
-	/* TODO: query Device list */
+	
 	return 0;
 }
 
@@ -334,7 +426,7 @@ static int msm_device_info(struct snd_kcontrol *kcontrol,
 				struct snd_ctl_elem_info *uinfo)
 {
 	uinfo->type = SNDRV_CTL_ELEM_TYPE_INTEGER;
-	uinfo->count = 1; /* Device */
+	uinfo->count = 1; 
 
 	uinfo->value.integer.min = 0;
 	uinfo->value.integer.max = msm_snddev_devcount();
@@ -364,13 +456,26 @@ static int msm_device_put(struct snd_kcontrol *kcontrol,
 	}
 	pr_info("%s:device %s set %d\n", __func__, dev_info->name, set);
 
+#ifdef CONFIG_MACH_VILLEC2
+	pr_aud_info("[ALSA] msm_en_device (dev %s, id %d, enable %d, opened %d)\n",
+		dev_info->name, route_cfg.dev_id, set, dev_info->opened);
+#endif
+
 	if (set) {
 		if (!dev_info->opened) {
 			set_freq = dev_info->sample_rate;
+#ifdef CONFIG_MACH_VILLEC2
+			if (!msm_device_is_voice(route_cfg.dev_id) && msm_get_call_state()) {
+#else
 			if (!msm_device_is_voice(route_cfg.dev_id)) {
+#endif
 				msm_get_voc_freq(&tx_freq, &rx_freq);
 				if (dev_info->capability & SNDDEV_CAP_TX)
 					set_freq = tx_freq;
+#ifdef CONFIG_MACH_VILLEC2
+				if (dev_info->capability & SNDDEV_CAP_RX)
+					set_freq = rx_freq;
+#endif
 
 				if (set_freq == 0)
 					set_freq = dev_info->sample_rate;
@@ -499,7 +604,7 @@ static int msm_route_info(struct snd_kcontrol *kcontrol,
 				struct snd_ctl_elem_info *uinfo)
 {
 	uinfo->type = SNDRV_CTL_ELEM_TYPE_INTEGER;
-	uinfo->count = 3; /* Device */
+	uinfo->count = 3; 
 
 	uinfo->value.integer.min = 0;
 	uinfo->value.integer.max = msm_snddev_devcount();
@@ -510,7 +615,7 @@ static int msm_route_get(struct snd_kcontrol *kcontrol,
 				struct snd_ctl_elem_value *ucontrol)
 {
 	ucontrol->value.integer.value[0] = 0;
-	/* TODO: query Device list */
+	
 	return 0;
 }
 
@@ -527,6 +632,10 @@ static int msm_route_put(struct snd_kcontrol *kcontrol,
 	u64 session_mask = 0;
 	route_cfg.dev_id = ucontrol->value.integer.value[1];
 
+#ifdef CONFIG_MACH_VILLEC2
+	pr_aud_info("[ALSA] msm_route_stream: session %d, dev %d, enable %d\n",
+		session_id, route_cfg.dev_id, set);
+#endif
 	if (ucontrol->id.numid == 2)
 		route_cfg.stream_type =	AUDIO_ROUTE_STREAM_PLAYBACK;
 	else
@@ -645,6 +754,11 @@ static int msm_device_volume_put(struct snd_kcontrol *kcontrol,
 
 	pr_debug("%s:dev_id = %d, volume = %d\n", __func__, dev_id, volume);
 
+#ifdef CONFIG_MACH_VILLEC2
+	pr_aud_info("[ALSA] msm_set_device_volume: dev %d, volume %d\n",
+		dev_id, volume);
+#endif
+
 	dev_info = audio_dev_ctrl_find_dev(dev_id);
 
 	if (IS_ERR(dev_info)) {
@@ -743,10 +857,6 @@ static int pcm_route_info(struct snd_kcontrol *kcontrol,
 			struct snd_ctl_elem_info *uinfo)
 {
 	uinfo->type = SNDRV_CTL_ELEM_TYPE_INTEGER;
-	/*
-	 * First parameter is session id ~ subdevice number
-	 * Second parameter is device id.
-	 */
 	uinfo->count = 3;
 	uinfo->value.integer.min = 0;
 	uinfo->value.integer.max = msm_snddev_devcount();
@@ -774,11 +884,6 @@ static int pcm_route_put_rx(struct snd_kcontrol *kcontrol,
 	struct msm_snddev_info *dev_info;
 	u64 session_mask = 0;
 
-	/*
-	 * session id is incremented by one and stored as session id 0
-	 * is being used by dsp currently. whereas user space would use
-	 * subdevice number as session id.
-	 */
 	session_id = ucontrol->value.integer.value[0];
 	route_cfg.dev_id = ucontrol->value.integer.value[1];
 	set = ucontrol->value.integer.value[2];
@@ -894,8 +999,8 @@ static int msm_loopback_put(struct snd_kcontrol *kcontrol,
 				struct snd_ctl_elem_value *ucontrol)
 {
 	int rc = 0;
-	struct msm_snddev_info *src_dev_info = NULL; /* TX device */
-	struct msm_snddev_info *dst_dev_info = NULL; /* RX device */
+	struct msm_snddev_info *src_dev_info = NULL; 
+	struct msm_snddev_info *dst_dev_info = NULL; 
 	int dst_dev_id = ucontrol->value.integer.value[0];
 	int src_dev_id = ucontrol->value.integer.value[1];
 	int set = ucontrol->value.integer.value[2];
@@ -1058,12 +1163,6 @@ static int snd_dev_ctl_index(int idx)
   .private_value = addr, \
 }
 
-/* If new controls are to be added which would be constant across the
- * different targets, please add to the structure
- * snd_msm_controls. Please do not add any controls to the structure
- * snd_msm_secondary_controls defined below unless they are msm8x60
- * specific.
- */
 
 static struct snd_kcontrol_new snd_msm_controls[] = {
 	MSM_EXT("Count", msm_scontrol_count_info, msm_scontrol_count_get, \

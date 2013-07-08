@@ -1,4 +1,4 @@
-/* Copyright (c) 2011, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2011, Code Aurora Forum. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -17,7 +17,6 @@
 #include <linux/mfd/pmic8901.h>
 #include <mach/irqs.h>
 
-/* Macros assume PMIC GPIOs start at 0 */
 #define PM8058_GPIO_BASE			NR_MSM_GPIOS
 #define PM8058_GPIO_PM_TO_SYS(pm_gpio)		(pm_gpio + PM8058_GPIO_BASE)
 #define PM8058_GPIO_SYS_TO_PM(sys_gpio)		(sys_gpio - PM8058_GPIO_BASE)
@@ -25,6 +24,8 @@
 #define PM8058_MPP_PM_TO_SYS(pm_gpio)		(pm_gpio + PM8058_MPP_BASE)
 #define PM8058_MPP_SYS_TO_PM(sys_gpio)		(sys_gpio - PM8058_MPP_BASE)
 #define PM8058_IRQ_BASE				(NR_MSM_IRQS + NR_GPIO_IRQS)
+#define PM8901_GPIO_BASE			(PM8058_GPIO_BASE + \
+						PM8058_GPIOS + PM8058_MPPS)
 
 #define PM8901_MPP_BASE				(PM8058_GPIO_BASE + \
 						PM8058_GPIOS + PM8058_MPPS)

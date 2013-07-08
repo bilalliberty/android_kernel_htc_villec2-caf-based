@@ -1,4 +1,4 @@
-/* Copyright (c) 2009-2011, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2009-2011, Code Aurora Forum. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -10,10 +10,6 @@
  * GNU General Public License for more details.
  *
  */
-/*
- * Qualcomm PMIC8058 driver
- *
- */
 #include <linux/kernel.h>
 #include <linux/platform_device.h>
 #include <linux/slab.h>
@@ -23,18 +19,17 @@
 #include <linux/mfd/pmic8058.h>
 #include <linux/mfd/pm8xxx/core.h>
 #include <linux/msm_adc.h>
+#include <linux/syscore_ops.h>
 #include <linux/module.h>
 
 #define REG_MPP_BASE			0x50
 #define REG_IRQ_BASE			0x1BB
 
-/* PMIC8058 Revision */
-#define PM8058_REG_REV			0x002  /* PMIC4 revision */
+#define PM8058_REG_REV			0x002  
 #define PM8058_VERSION_MASK		0xF0
 #define PM8058_REVISION_MASK		0x0F
 #define PM8058_VERSION_VALUE		0xE0
 
-/* PMIC 8058 Battery Alarm SSBI registers */
 #define REG_BATT_ALARM_THRESH		0x023
 #define REG_BATT_ALARM_CTRL1		0x024
 #define REG_BATT_ALARM_CTRL2		0x0AA
@@ -43,15 +38,12 @@
 #define REG_TEMP_ALRM_CTRL		0x1B
 #define REG_TEMP_ALRM_PWM		0x9B
 
-/* PON CNTL 4 register */
 #define SSBI_REG_ADDR_PON_CNTL_4 0x98
 #define PM8058_PON_RESET_EN_MASK 0x01
 
-/* PON CNTL 5 register */
 #define SSBI_REG_ADDR_PON_CNTL_5 0x7B
 #define PM8058_HARD_RESET_EN_MASK 0x08
 
-/* GP_TEST1 register */
 #define SSBI_REG_ADDR_GP_TEST_1		0x07A
 
 #define PM8058_RTC_BASE			0x1E8
@@ -75,6 +67,8 @@ struct pm8058_chip {
 
 	u8		revision;
 };
+
+static struct pm8058_chip *pmic_chip;
 
 static int pm8058_readb(const struct device *dev, u16 addr, u8 *val)
 {
@@ -691,6 +685,64 @@ bail:
 	return rc;
 }
 
+#ifdef CONFIG_PM
+extern int msm_show_resume_irq_mask;
+static void pm8058_show_resume_irq(void)
+{
+	int i, irq;
+	struct pm_irq_chip *chip = pmic_chip->irq_chip;
+
+	if (!msm_show_resume_irq_mask || !chip)
+		return;
+
+	for (i = 0; i < NR_PMIC8058_IRQS; i++) {
+		irq = i + pm8xxx_get_irq_base(chip);
+		if (pm8xxx_get_irq_wake_stat(chip, irq)) {
+			if (pm8xxx_get_irq_it_stat(chip, irq)) {
+				pr_warning("%s: %d triggered\n", __func__, irq);
+				printk(KERN_INFO "[K][WAKEUP] Resume caused by pmic-%d\n",
+				irq - (NR_MSM_IRQS + NR_GPIO_IRQS));
+			}
+		}
+	}
+}
+
+int pm8058_dump_irq_status(int irq)
+{
+	int irq_it_stat, is_masked;
+	struct pm_irq_chip *chip = pmic_chip->irq_chip;
+
+	if (!chip)
+		return -1;
+
+	irq_it_stat = pm8xxx_get_irq_it_stat(chip, irq);
+	is_masked = pm8xxx_get_is_irq_masked(chip, irq);
+	pr_info("%s(irq=%d): it_stat=%d, is_masked=%d\n",
+					__func__, irq, irq_it_stat, is_masked);
+	return 0;
+}
+EXPORT_SYMBOL_GPL(pm8058_dump_irq_status);
+
+static int pm8058_suspend(void)
+{
+	return 0;
+}
+
+static void pm8058_resume(void)
+{
+	pm8058_show_resume_irq();
+}
+
+#else
+#define pm8058_suspend NULL
+#define pm8058_resume NULL
+#endif
+
+static struct syscore_ops pm8058_pm = {
+	.suspend = pm8058_suspend,
+	.resume = pm8058_resume,
+};
+
 static int __devinit pm8058_probe(struct platform_device *pdev)
 {
 	int rc;
@@ -713,7 +765,10 @@ static int __devinit pm8058_probe(struct platform_device *pdev)
 	pm8058_drvdata.pm_chip_data = pmic;
 	platform_set_drvdata(pdev, &pm8058_drvdata);
 
-	/* Read PMIC chip revision */
+	pmic_chip = pmic;
+	register_syscore_ops(&pm8058_pm);
+
+	
 	rc = pm8058_readb(pmic->dev, PM8058_REG_REV, &pmic->revision);
 	if (rc)
 		pr_err("%s: Failed on pm8058_readb for revision: rc=%d.\n",
@@ -730,10 +785,17 @@ static int __devinit pm8058_probe(struct platform_device *pdev)
 		goto err;
 	}
 
-	rc = pm8xxx_hard_reset_config(PM8XXX_SHUTDOWN_ON_HARD_RESET);
-	if (rc < 0)
-		pr_err("%s: failed to config shutdown on hard reset: %d\n",
-								__func__, rc);
+	
+	
+	if (pdata->hardreset_config) {
+		rc = pm8xxx_hard_reset_config(PM8XXX_RESTART_ON_HARD_RESET);
+		if (rc < 0)
+			pr_err("%s: failed to config reset on hard reset: %d\n", __func__, rc);
+		} else {
+			rc = pm8xxx_hard_reset_config(PM8XXX_SHUTDOWN_ON_HARD_RESET);
+			if (rc < 0)
+				pr_err("%s: failed to config shutdown on hard reset: %d\n", __func__, rc);
+		}
 
 	return 0;
 

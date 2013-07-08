@@ -1,4 +1,4 @@
-/* Copyright (c) 2010-2013, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2010-2012, Code Aurora Forum. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -20,6 +20,12 @@
 #include <mach/qdsp6v2/audio_acdb.h>
 #include <sound/apr_audio.h>
 #include <sound/q6afe.h>
+#include <linux/delay.h>
+
+#undef pr_info
+#undef pr_err
+#define pr_info(fmt, ...) pr_aud_info(fmt, ##__VA_ARGS__)
+#define pr_err(fmt, ...) pr_aud_err(fmt, ##__VA_ARGS__)
 
 struct afe_ctl {
 	void *apr;
@@ -38,9 +44,6 @@ struct afe_ctl {
 static struct afe_ctl this_afe;
 
 static struct acdb_cal_block afe_cal_addr[MAX_AUDPROC_TYPES];
-static int pcm_afe_instance[2];
-static int proxy_afe_instance[2];
-bool afe_close_done[2] = {true, true};
 
 #define TIMEOUT_MS 1000
 #define Q6AFE_MAX_VOLUME 0x3FFF
@@ -58,7 +61,7 @@ static int32_t afe_callback(struct apr_client_data *data, void *priv)
 			atomic_set(&this_afe.state, 0);
 			this_afe.apr = NULL;
 		}
-		/* send info to user */
+		
 		pr_debug("task_name = %s pid = %d\n",
 			this_afe.task->comm, this_afe.task->pid);
 		send_sig(SIGUSR1, this_afe.task, 0);
@@ -71,7 +74,7 @@ static int32_t afe_callback(struct apr_client_data *data, void *priv)
 		pr_debug("%s:opcode = 0x%x cmd = 0x%x status = 0x%x\n",
 					__func__, data->opcode,
 					payload[0], payload[1]);
-		/* payload[1] contains the error status for response */
+		
 		if (payload[1] != 0) {
 			atomic_set(&this_afe.status, -1);
 			pr_err("%s: cmd = 0x%x returned error = 0x%x\n",
@@ -244,9 +247,6 @@ int afe_convert_virtual_to_portid(u16 port_id)
 {
 	int ret;
 
-	/* if port_id is virtual, convert to physical..
-	 * if port_id is already physical, return physical
-	 */
 	if (afe_validate_port(port_id) < 0) {
 		if (port_id == RT_PROXY_DAI_001_RX ||
 			port_id == RT_PROXY_DAI_001_TX ||
@@ -414,6 +414,9 @@ static void afe_send_cal_block(int32_t path, u16 port_id)
 				 msecs_to_jiffies(TIMEOUT_MS));
 	if (!result) {
 		pr_err("%s: wait_event timeout SET AFE CAL\n", __func__);
+#ifdef HTC_AUD_DEBUG
+                BUG();
+#endif
 		goto done;
 	}
 
@@ -432,9 +435,6 @@ void afe_send_cal(u16 port_id)
 		afe_send_cal_block(RX_CAL, port_id);
 }
 
-/* This function sends multi-channel HDMI configuration command and AFE
- * calibration which is only supported by QDSP6 on 8960 and onward.
- */
 int afe_port_start(u16 port_id, union afe_port_config *afe_config,
 		   u32 rate)
 {
@@ -447,32 +447,14 @@ int afe_port_start(u16 port_id, union afe_port_config *afe_config,
 		ret = -EINVAL;
 		return ret;
 	}
-	pr_debug("%s: %d %d\n", __func__, port_id, rate);
+	pr_info("%s: %d %d\n", __func__, port_id, rate);
 
 	if ((port_id == RT_PROXY_DAI_001_RX) ||
-		(port_id == RT_PROXY_DAI_002_TX)) {
-		pr_debug("%s: before incrementing pcm_afe_instance %d"\
-				" port_id %d\n", __func__,
-				pcm_afe_instance[port_id & 0x1], port_id);
-		port_id = VIRTUAL_ID_TO_PORTID(port_id);
-		pcm_afe_instance[port_id & 0x1]++;
+		(port_id == RT_PROXY_DAI_002_TX))
 		return 0;
-	}
 	if ((port_id == RT_PROXY_DAI_002_RX) ||
-		(port_id == RT_PROXY_DAI_001_TX)) {
-		pr_debug("%s: before incrementing proxy_afe_instance %d"\
-				" port_id %d\n", __func__,
-				proxy_afe_instance[port_id & 0x1], port_id);
-		if (!afe_close_done[port_id & 0x1]) {
-			/*close pcm dai corresponding to the proxy dai*/
-			afe_close(port_id - 0x10);
-			pcm_afe_instance[port_id & 0x1]++;
-			pr_debug("%s: reconfigure afe port again\n", __func__);
-		}
-		proxy_afe_instance[port_id & 0x1]++;
-		afe_close_done[port_id & 0x1] = false;
+		(port_id == RT_PROXY_DAI_001_TX))
 		port_id = VIRTUAL_ID_TO_PORTID(port_id);
-	}
 
 	ret = afe_q6_interface_prepare();
 	if (IS_ERR_VALUE(ret))
@@ -513,13 +495,6 @@ int afe_port_start(u16 port_id, union afe_port_config *afe_config,
 		case SECONDARY_I2S_TX:
 		case PRIMARY_I2S_RX:
 		case PRIMARY_I2S_TX:
-			/* AFE_PORT_CMD_I2S_CONFIG command is not supported
-			 * in the LPASS EL 1.0. So we have to distiguish
-			 * which AFE command, AFE_PORT_CMD_I2S_CONFIG or
-			 * AFE_PORT_AUDIO_IF_CONFIG	to use. If the format
-			 * is L-PCM, the AFE_PORT_AUDIO_IF_CONFIG is used
-			 * to make the backward compatible.
-			 */
 			pr_debug("%s: afe_config->mi2s.format = %d\n", __func__,
 					 afe_config->mi2s.format);
 			if (afe_config->mi2s.format == MSM_AFE_I2S_FORMAT_LPCM)
@@ -568,7 +543,7 @@ int afe_port_start(u16 port_id, union afe_port_config *afe_config,
 		goto fail_cmd;
 	}
 
-	/* send AFE cal */
+	
 	afe_send_cal(port_id);
 
 	start.hdr.hdr_field = APR_HDR_FIELD(APR_MSG_TYPE_SEQ_CMD,
@@ -597,6 +572,9 @@ int afe_port_start(u16 port_id, union afe_port_config *afe_config,
 				msecs_to_jiffies(TIMEOUT_MS));
 	if (!ret) {
 		pr_err("%s: wait_event timeout PORT START\n", __func__);
+#ifdef HTC_AUD_DEBUG
+                BUG();
+#endif
 		ret = -EINVAL;
 		goto fail_cmd;
 	}
@@ -612,11 +590,11 @@ fail_cmd:
 	return ret;
 }
 
-/* This function should be used by 8660 exclusively */
 int afe_open(u16 port_id, union afe_port_config *afe_config, int rate)
 {
 	struct afe_port_start_command start;
 	struct afe_audioif_config_command config;
+	static int  if_first_open = 1;
 	int ret = 0;
 
 	if (!afe_config) {
@@ -625,7 +603,7 @@ int afe_open(u16 port_id, union afe_port_config *afe_config, int rate)
 		return ret;
 	}
 
-	pr_debug("%s: %d %d\n", __func__, port_id, rate);
+	pr_info("%s: %d %d\n", __func__, port_id, rate);
 
 	if ((port_id == RT_PROXY_DAI_001_RX) ||
 		(port_id == RT_PROXY_DAI_002_TX))
@@ -637,6 +615,15 @@ int afe_open(u16 port_id, union afe_port_config *afe_config, int rate)
 	ret = afe_q6_interface_prepare();
 	if (ret != 0)
 		return ret;
+
+
+        if(if_first_open)
+        {
+                msleep(100);
+                if_first_open = 0;
+                pr_info("%s: First afe_open ",__func__);
+        }
+
 
 	config.hdr.hdr_field = APR_HDR_FIELD(APR_MSG_TYPE_SEQ_CMD,
 				APR_HDR_LEN(APR_HDR_SIZE), APR_PKT_VER);
@@ -663,13 +650,6 @@ int afe_open(u16 port_id, union afe_port_config *afe_config, int rate)
 	case SECONDARY_I2S_TX:
 	case PRIMARY_I2S_RX:
 	case PRIMARY_I2S_TX:
-		/* AFE_PORT_CMD_I2S_CONFIG command is not supported
-		 * in the LPASS EL 1.0. So we have to distiguish
-		 * which AFE command, AFE_PORT_CMD_I2S_CONFIG or
-		 * AFE_PORT_AUDIO_IF_CONFIG	to use. If the format
-		 * is L-PCM, the AFE_PORT_AUDIO_IF_CONFIG is used
-		 * to make the backward compatible.
-		 */
 		pr_debug("%s: afe_config->mi2s.format = %d\n", __func__,
 				 afe_config->mi2s.format);
 		if (afe_config->mi2s.format == MSM_AFE_I2S_FORMAT_LPCM)
@@ -781,7 +761,7 @@ int afe_loopback(u16 enable, u16 dst_port, u16 src_port)
 	lb_cmd.mode = 0xFFFF;
 	lb_cmd.enable = (enable ? 1 : 0);
 	atomic_set(&this_afe.state, 1);
-
+        pr_info("%s: AFE loopback enable %d from src 0x%x to dst 0x%x\n", __func__,enable,src_port,dst_port);
 	ret = apr_send_pkt(this_afe.apr, (uint32_t *) &lb_cmd);
 	if (ret < 0) {
 		pr_err("%s: AFE loopback failed\n", __func__);
@@ -793,6 +773,9 @@ int afe_loopback(u16 enable, u16 dst_port, u16 src_port)
 				msecs_to_jiffies(TIMEOUT_MS));
 	if (!ret) {
 		pr_err("%s: wait_event timeout\n", __func__);
+#ifdef HTC_AUD_DEBUG
+                BUG();
+#endif
 		ret = -EINVAL;
 	}
 done:
@@ -848,8 +831,11 @@ int afe_loopback_cfg(u16 enable, u16 dst_port, u16 src_port, u16 mode)
 	ret = wait_event_timeout(this_afe.wait,
 		(atomic_read(&this_afe.state) == 0),
 			msecs_to_jiffies(TIMEOUT_MS));
-	if (ret < 0) {
+	if (!ret) {
 		pr_err("%s: wait_event timeout\n", __func__);
+#ifdef HTC_AUD_DEBUG
+                BUG();
+#endif
 		ret = -EINVAL;
 		goto fail_cmd;
 	}
@@ -882,7 +868,7 @@ int afe_loopback_gain(u16 port_id, u16 volume)
 		goto fail_cmd;
 	}
 
-	/* RX ports numbers are even .TX ports numbers are odd. */
+	
 	if (port_id % 2 == 0) {
 		pr_err("%s: Failed : afe loopback gain only for TX ports."
 			" port_id %d\n", __func__, port_id);
@@ -926,7 +912,7 @@ int afe_loopback_gain(u16 port_id, u16 volume)
 	ret = wait_event_timeout(this_afe.wait,
 		(atomic_read(&this_afe.state) == 0),
 			msecs_to_jiffies(TIMEOUT_MS));
-	if (ret < 0) {
+	if (!ret) {
 		pr_err("%s: wait_event timeout\n", __func__);
 		ret = -EINVAL;
 		goto fail_cmd;
@@ -954,7 +940,7 @@ int afe_apply_gain(u16 port_id, u16 gain)
 		goto fail_cmd;
 	}
 
-	/* RX ports numbers are even .TX ports numbers are odd. */
+	
 	if (port_id % 2 == 0) {
 		pr_err("%s: Failed : afe apply gain only for TX ports."
 			" port_id %d\n", __func__, port_id);
@@ -987,8 +973,11 @@ int afe_apply_gain(u16 port_id, u16 gain)
 	ret = wait_event_timeout(this_afe.wait,
 		(atomic_read(&this_afe.state) == 0),
 			msecs_to_jiffies(TIMEOUT_MS));
-	if (ret < 0) {
+	if (!ret) {
 		pr_err("%s: wait_event timeout\n", __func__);
+#ifdef HTC_AUD_DEBUG
+                BUG();
+#endif
 		ret = -EINVAL;
 		goto fail_cmd;
 	}
@@ -1063,6 +1052,9 @@ int afe_start_pseudo_port(u16 port_id)
 				 msecs_to_jiffies(TIMEOUT_MS));
 	if (!ret) {
 		pr_err("%s: wait_event timeout\n", __func__);
+#ifdef HTC_AUD_DEBUG
+                BUG();
+#endif
 		return -EINVAL;
 	}
 
@@ -1136,6 +1128,9 @@ int afe_stop_pseudo_port(u16 port_id)
 				 msecs_to_jiffies(TIMEOUT_MS));
 	if (!ret) {
 		pr_err("%s: wait_event timeout\n", __func__);
+#ifdef HTC_AUD_DEBUG
+                BUG();
+#endif
 		return -EINVAL;
 	}
 
@@ -1662,8 +1657,11 @@ int afe_sidetone(u16 tx_port_id, u16 rx_port_id, u16 enable, uint16_t gain)
 	ret = wait_event_timeout(this_afe.wait,
 		(atomic_read(&this_afe.state) == 0),
 			msecs_to_jiffies(TIMEOUT_MS));
-	if (ret < 0) {
+	if (!ret) {
 		pr_err("%s: wait_event timeout\n", __func__);
+#ifdef HTC_AUD_DEBUG
+                BUG();
+#endif
 		ret = -EINVAL;
 		goto fail_cmd;
 	}
@@ -1682,7 +1680,7 @@ int afe_port_stop_nowait(int port_id)
 		ret = -EINVAL;
 		goto fail_cmd;
 	}
-	pr_debug("%s: port_id=%d\n", __func__, port_id);
+	pr_info("%s: port_id=%d\n", __func__, port_id);
 	port_id = afe_convert_virtual_to_portid(port_id);
 
 	stop.hdr.hdr_field = APR_HDR_FIELD(APR_MSG_TYPE_SEQ_CMD,
@@ -1720,34 +1718,7 @@ int afe_close(int port_id)
 		ret = -EINVAL;
 		goto fail_cmd;
 	}
-	pr_debug("%s: port_id=%d\n", __func__, port_id);
-
-	if ((port_id == RT_PROXY_DAI_001_RX) ||
-		(port_id == RT_PROXY_DAI_002_TX)) {
-		pr_debug("%s: before decrementing pcm_afe_instance %d\n",
-				__func__, pcm_afe_instance[port_id & 0x1]);
-		port_id = VIRTUAL_ID_TO_PORTID(port_id);
-		pcm_afe_instance[port_id & 0x1]--;
-		if (!(pcm_afe_instance[port_id & 0x1] == 0 &&
-			proxy_afe_instance[port_id & 0x1] == 0))
-			return 0;
-		else
-			afe_close_done[port_id & 0x1] = true;
-	}
-
-	if ((port_id == RT_PROXY_DAI_002_RX) ||
-		(port_id == RT_PROXY_DAI_001_TX)) {
-		pr_debug("%s: before decrementing proxy_afe_instance %d\n",
-				__func__, proxy_afe_instance[port_id & 0x1]);
-		port_id = VIRTUAL_ID_TO_PORTID(port_id);
-		proxy_afe_instance[port_id & 0x1]--;
-		if (!(pcm_afe_instance[port_id & 0x1] == 0 &&
-			proxy_afe_instance[port_id & 0x1] == 0))
-			return 0;
-		else
-			afe_close_done[port_id & 0x1] = true;
-	}
-
+	pr_info("%s: port_id=%d\n", __func__, port_id);
 	port_id = afe_convert_virtual_to_portid(port_id);
 
 	stop.hdr.hdr_field = APR_HDR_FIELD(APR_MSG_TYPE_SEQ_CMD,
@@ -1794,11 +1765,11 @@ static int __init afe_init(void)
 	this_afe.apr = NULL;
 #ifdef CONFIG_DEBUG_FS
 	debugfs_afelb = debugfs_create_file("afe_loopback",
-	0220, NULL, (void *) "afe_loopback",
+	S_IFREG | S_IWUSR, NULL, (void *) "afe_loopback",
 	&afe_debug_fops);
 
 	debugfs_afelb_gain = debugfs_create_file("afe_loopback_gain",
-	0220, NULL, (void *) "afe_loopback_gain",
+	S_IFREG | S_IWUSR, NULL, (void *) "afe_loopback_gain",
 	&afe_debug_fops);
 
 

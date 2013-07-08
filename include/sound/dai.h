@@ -1,4 +1,4 @@
-/* Copyright (c) 2010-2011, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2010-2011, Code Aurora Forum. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -30,7 +30,6 @@ enum {
 	DAI_SEC_MIC,
 };
 
-/* Function Prototypes */
 int dai_open(uint32_t dma_ch);
 void dai_close(uint32_t dma_ch);
 int dai_start(uint32_t dma_ch);

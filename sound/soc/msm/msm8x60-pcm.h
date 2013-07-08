@@ -1,7 +1,7 @@
 /*
  * Copyright (C) 2008 Google, Inc.
  * Copyright (C) 2008 HTC Corporation
- * Copyright (c) 2010-2011, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2010-2011, Code Aurora Forum. All rights reserved.
  *
  * This software is licensed under the terms of the GNU General Public
  * License version 2, as published by the Free Software Foundation, and
@@ -54,8 +54,8 @@ struct msm_audio {
 	struct snd_pcm_substream *substream;
 	unsigned int pcm_size;
 	unsigned int pcm_count;
-	unsigned int pcm_irq_pos;       /* IRQ position */
-	uint16_t source; /* Encoding source bit mask */
+	unsigned int pcm_irq_pos;       
+	uint16_t source; 
 
 	struct audio_client *audio_client;
 
@@ -66,8 +66,8 @@ struct msm_audio {
 	uint32_t channel_mode;
 	uint32_t dsp_cnt;
 
-	uint32_t device_events; /* device events interested in */
-	int abort; /* set when error, like sample rate mismatch */
+	uint32_t device_events; 
+	int abort; 
 
 	int enabled;
 	int close_ack;
@@ -85,8 +85,7 @@ struct pcm_session {
 	unsigned short capture_session[MAX_CAPTURE_SESSIONS][MAX_COPP];
 };
 
-/* platform data */
 extern struct snd_soc_platform_driver msm_soc_platform;
 extern struct pcm_session session_route;
 
-#endif /*_MSM_PCM_H*/
+#endif 

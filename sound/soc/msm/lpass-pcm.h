@@ -1,4 +1,4 @@
-/* Copyright (c) 2010, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2010, Code Aurora Forum. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -26,7 +26,7 @@
 struct msm_audio {
 	struct snd_pcm_substream *substream;
 
-	/* data allocated for various buffers */
+	
 	char *data;
 	dma_addr_t phys;
 
@@ -42,4 +42,4 @@ struct msm_audio {
 extern struct snd_soc_dai msm_cpu_dai[NUM_DMAS];
 extern struct snd_soc_platform msm8660_soc_platform;
 
-#endif /*_MSM_PCM_H*/
+#endif 

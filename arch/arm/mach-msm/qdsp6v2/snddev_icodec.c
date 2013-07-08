@@ -1,4 +1,4 @@
-/* Copyright (c) 2010-2012, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2010-2012, Code Aurora Forum. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -35,36 +35,44 @@
 #include <sound/apr_audio.h>
 #include "snddev_icodec.h"
 
-#define SNDDEV_ICODEC_PCM_SZ 32 /* 16 bit / sample stereo mode */
-#define SNDDEV_ICODEC_MUL_FACTOR 3 /* Multi by 8 Shift by 3  */
+#define SNDDEV_ICODEC_PCM_SZ 32 
+#define SNDDEV_ICODEC_MUL_FACTOR 3 
 #define SNDDEV_ICODEC_CLK_RATE(freq) \
 	(((freq) * (SNDDEV_ICODEC_PCM_SZ)) << (SNDDEV_ICODEC_MUL_FACTOR))
 #define SNDDEV_LOW_POWER_MODE 0
 #define SNDDEV_HIGH_POWER_MODE 1
-/* Voltage required for S4 in microVolts, 2.2V or 2200000microvolts */
 #define SNDDEV_VREG_8058_S4_VOLTAGE (2200000)
-/* Load Current required for S4 in microAmps,
-   36mA - 56mA */
 #define SNDDEV_VREG_LOW_POWER_LOAD (36000)
 #define SNDDEV_VREG_HIGH_POWER_LOAD (56000)
 
+#ifdef CONFIG_MACH_VILLEC2
+
+#undef pr_info
+#undef pr_err
+#define pr_info(fmt, ...) pr_aud_info(fmt, ##__VA_ARGS__)
+#define pr_err(fmt, ...) pr_aud_err(fmt, ##__VA_ARGS__)
+
+static struct q6v2audio_icodec_ops default_audio_ops;
+static struct q6v2audio_icodec_ops *audio_ops = &default_audio_ops;
+#endif
+
 bool msm_codec_i2s_slave_mode;
 
-/* Context for each internal codec sound device */
+#ifndef CONFIG_MACH_VILLEC2 
 struct snddev_icodec_state {
 	struct snddev_icodec_data *data;
 	struct adie_codec_path *adie_path;
 	u32 sample_rate;
 	u32 enabled;
 };
+#endif
 
-/* Global state for the driver */
 struct snddev_icodec_drv_state {
 	struct mutex rx_lock;
 	struct mutex lb_lock;
 	struct mutex tx_lock;
-	u32 rx_active; /* ensure one rx device at a time */
-	u32 tx_active; /* ensure one tx device at a time */
+	u32 rx_active; 
+	u32 tx_active; 
 	struct clk *rx_osrclk;
 	struct clk *rx_bitclk;
 	struct clk *tx_osrclk;
@@ -73,7 +81,7 @@ struct snddev_icodec_drv_state {
 	struct pm_qos_request rx_pm_qos_req;
 	struct pm_qos_request tx_pm_qos_req;
 
-	/* handle to pmic8058 regulator smps4 */
+	
 	struct regulator *snddev_vreg;
 };
 
@@ -138,6 +146,7 @@ static int msm_snddev_rx_mclk_request(void)
 {
 	int rc = 0;
 
+#ifndef CONFIG_MACH_VILLEC2
 	rc = gpio_request(the_msm_cdcclk_ctl_state.rx_mclk,
 		"MSM_SNDDEV_RX_MCLK");
 	if (rc < 0) {
@@ -145,12 +154,14 @@ static int msm_snddev_rx_mclk_request(void)
 		return rc;
 	}
 	the_msm_cdcclk_ctl_state.rx_mclk_requested = 1;
+#endif
 	return rc;
 }
 static int msm_snddev_tx_mclk_request(void)
 {
 	int rc = 0;
 
+#ifndef CONFIG_MACH_VILLEC2
 	rc = gpio_request(the_msm_cdcclk_ctl_state.tx_mclk,
 		"MSM_SNDDEV_TX_MCLK");
 	if (rc < 0) {
@@ -158,28 +169,33 @@ static int msm_snddev_tx_mclk_request(void)
 		return rc;
 	}
 	the_msm_cdcclk_ctl_state.tx_mclk_requested = 1;
+#endif
 	return rc;
 }
 static void msm_snddev_rx_mclk_free(void)
 {
+#ifndef CONFIG_MACH_VILLEC2
 	if (the_msm_cdcclk_ctl_state.rx_mclk_requested) {
 		gpio_free(the_msm_cdcclk_ctl_state.rx_mclk);
 		the_msm_cdcclk_ctl_state.rx_mclk_requested = 0;
 	}
+#endif
 }
 static void msm_snddev_tx_mclk_free(void)
 {
+#ifndef CONFIG_MACH_VILLEC2
 	if (the_msm_cdcclk_ctl_state.tx_mclk_requested) {
 		gpio_free(the_msm_cdcclk_ctl_state.tx_mclk);
 		the_msm_cdcclk_ctl_state.tx_mclk_requested = 0;
 	}
+#endif
 }
 static int get_msm_cdcclk_ctl_gpios(struct platform_device *pdev)
 {
 	int rc = 0;
 	struct resource *res;
 
-	/* Claim all of the GPIOs. */
+	
 	res = platform_get_resource_byname(pdev, IORESOURCE_IO,
 			"msm_snddev_rx_mclk");
 	if (!res) {
@@ -221,9 +237,6 @@ static int snddev_icodec_open_lb(struct snddev_icodec_state *icodec)
 	int trc;
 	struct snddev_icodec_drv_state *drv = &snddev_icodec_drv;
 
-	/* Voting for low power is ok here as all use cases are
-	 * supported in low power mode.
-	 */
 	if (drv->snddev_vreg)
 		vreg_mode_vote(drv->snddev_vreg, 1,
 					SNDDEV_LOW_POWER_MODE);
@@ -263,12 +276,6 @@ static int initialize_msm_icodec_gpios(struct platform_device *pdev)
 				res->start);
 			goto err;
 		} else {
-			/* This platform data structure only works if all gpio
-			 * resources are to be used only in output mode.
-			 * If gpio resources are added which are to be used in
-			 * input mode, then the platform data structure will
-			 * have to be changed.
-			 */
 
 			gpio_direction_output(res->start, reg_defaults[i]);
 			gpio_free(res->start);
@@ -330,10 +337,6 @@ static int snddev_icodec_open_rx(struct snddev_icodec_state *icodec)
 	if (IS_ERR(drv->rx_bitclk))
 		pr_err("%s clock Error\n", __func__);
 
-	/* Master clock = Sample Rate * OSR rate bit clock
-	 * OSR Rate bit clock = bit/sample * channel master
-	 * clock / bit clock = divider value = 8
-	 */
 	if (msm_codec_i2s_slave_mode) {
 		pr_info("%s: configuring bit clock for slave mode\n",
 				__func__);
@@ -350,16 +353,13 @@ static int snddev_icodec_open_rx(struct snddev_icodec_state *icodec)
 	if (icodec->data->voltage_on)
 		icodec->data->voltage_on();
 
-	/* Configure ADIE */
+	
 	trc = adie_codec_open(icodec->data->profile, &icodec->adie_path);
 	if (IS_ERR_VALUE(trc))
 		pr_err("%s: adie codec open failed\n", __func__);
 	else
 		adie_codec_setpath(icodec->adie_path,
 					icodec->sample_rate, 256);
-	/* OSR default to 256, can be changed for power optimization
-	 * If OSR is to be changed, need clock API for setting the divider
-	 */
 
 	switch (icodec->data->channel_mode) {
 	case 2:
@@ -384,7 +384,7 @@ static int snddev_icodec_open_rx(struct snddev_icodec_state *icodec)
 	if (trc < 0)
 		pr_err("%s: afe open failed, trc = %d\n", __func__, trc);
 
-	/* Enable ADIE */
+	
 	if (icodec->adie_path) {
 		adie_codec_proceed_stage(icodec->adie_path,
 					ADIE_CODEC_DIGITAL_READY);
@@ -397,7 +397,7 @@ static int snddev_icodec_open_rx(struct snddev_icodec_state *icodec)
 	else
 		adie_codec_set_master_mode(icodec->adie_path, 0);
 
-	/* Enable power amplifier */
+	
 	if (icodec->data->pamp_on) {
 		if (icodec->data->pamp_on()) {
 			pr_err("%s: Error turning on rx power\n", __func__);
@@ -434,7 +434,7 @@ static int snddev_icodec_open_tx(struct snddev_icodec_state *icodec)
 	if (drv->snddev_vreg)
 		vreg_mode_vote(drv->snddev_vreg, 1, SNDDEV_HIGH_POWER_MODE);
 
-	/* Reuse pamp_on for TX platform-specific setup  */
+	
 	if (icodec->data->pamp_on) {
 		if (icodec->data->pamp_on()) {
 			pr_err("%s: Error turning on tx power\n", __func__);
@@ -460,10 +460,6 @@ static int snddev_icodec_open_tx(struct snddev_icodec_state *icodec)
 	if (IS_ERR(drv->tx_bitclk))
 		pr_err("%s clock Error\n", __func__);
 
-	/* Master clock = Sample Rate * OSR rate bit clock
-	 * OSR Rate bit clock = bit/sample * channel master
-	 * clock / bit clock = divider value = 8
-	 */
 	if (msm_codec_i2s_slave_mode) {
 		pr_info("%s: configuring bit clock for slave mode\n",
 				__func__);
@@ -473,7 +469,7 @@ static int snddev_icodec_open_tx(struct snddev_icodec_state *icodec)
 
 	clk_prepare_enable(drv->tx_bitclk);
 
-	/* Enable ADIE */
+	
 	trc = adie_codec_open(icodec->data->profile, &icodec->adie_path);
 	if (IS_ERR_VALUE(trc))
 		pr_err("%s: adie codec open failed\n", __func__);
@@ -533,7 +529,7 @@ static int snddev_icodec_close_lb(struct snddev_icodec_state *icodec)
 {
 	struct snddev_icodec_drv_state *drv = &snddev_icodec_drv;
 
-	/* Disable power amplifier */
+	
 	if (icodec->data->pamp_off)
 		icodec->data->pamp_off();
 
@@ -563,11 +559,11 @@ static int snddev_icodec_close_rx(struct snddev_icodec_state *icodec)
 	if (drv->snddev_vreg)
 		vreg_mode_vote(drv->snddev_vreg, 0, SNDDEV_HIGH_POWER_MODE);
 
-	/* Disable power amplifier */
+	
 	if (icodec->data->pamp_off)
 		icodec->data->pamp_off();
 
-	/* Disable ADIE */
+	
 	if (icodec->adie_path) {
 		adie_codec_proceed_stage(icodec->adie_path,
 			ADIE_CODEC_DIGITAL_OFF);
@@ -601,7 +597,7 @@ static int snddev_icodec_close_tx(struct snddev_icodec_state *icodec)
 	if (drv->snddev_vreg)
 		vreg_mode_vote(drv->snddev_vreg, 0, SNDDEV_HIGH_POWER_MODE);
 
-	/* Disable ADIE */
+	
 	if (icodec->adie_path) {
 		adie_codec_proceed_stage(icodec->adie_path,
 					ADIE_CODEC_DIGITAL_OFF);
@@ -616,7 +612,7 @@ static int snddev_icodec_close_tx(struct snddev_icodec_state *icodec)
 
 	msm_snddev_tx_mclk_free();
 
-	/* Reuse pamp_off for TX platform-specific setup  */
+	
 	if (icodec->data->pamp_off)
 		icodec->data->pamp_off();
 
@@ -976,12 +972,22 @@ int snddev_icodec_set_device_volume(struct msm_snddev_info *dev_info,
 	return rc;
 }
 
+#ifdef CONFIG_MACH_VILLEC2
+void htc_8x60_register_icodec_ops(struct q6v2audio_icodec_ops *ops)
+{
+	audio_ops = ops;
+}
+#endif
+
 static int snddev_icodec_probe(struct platform_device *pdev)
 {
 	int rc = 0;
 	struct snddev_icodec_data *pdata;
 	struct msm_snddev_info *dev_info;
 	struct snddev_icodec_state *icodec;
+#ifdef CONFIG_MACH_VILLEC2
+	static int first_time = 1;
+#endif
 
 	if (!pdev || !pdev->dev.platform_data) {
 		printk(KERN_ALERT "Invalid caller\n");
@@ -1032,6 +1038,18 @@ static int snddev_icodec_probe(struct platform_device *pdev)
 	} else {
 		dev_info->dev_ops.enable_anc = NULL;
 	}
+#ifdef CONFIG_MACH_VILLEC2
+	if (first_time) {
+		if (audio_ops->is_msm_i2s_slave)
+			msm_codec_i2s_slave_mode = audio_ops->is_msm_i2s_slave();
+		else
+			msm_codec_i2s_slave_mode = 0;
+
+		pr_aud_info("%s: msm_codec_i2s_slave_mode = %d\n",
+			__func__, msm_codec_i2s_slave_mode);
+		first_time = 0;
+	}
+#endif
 error:
 	return rc;
 }
@@ -1046,6 +1064,30 @@ static struct platform_driver snddev_icodec_driver = {
   .remove = snddev_icodec_remove,
   .driver = { .name = "snddev_icodec" }
 };
+
+#ifdef CONFIG_MACH_VILLEC2 
+int update_aic3254_info(struct aic3254_info *info)
+{
+	struct msm_snddev_info *dev_info;
+	int rc = 0;
+
+	dev_info = audio_dev_ctrl_find_dev(info->dev_id);
+	if (IS_ERR(dev_info))
+		rc = -ENODEV;
+	else {
+		if ((dev_info->copp_id == PRIMARY_I2S_RX) ||
+			(dev_info->copp_id == PRIMARY_I2S_TX)) {
+			struct snddev_icodec_state *icodec;
+			icodec = dev_info->private_data;
+			icodec->data->aic3254_id = info->path_id;
+			pr_aud_info("%s: update aic3254 id of device %s as %d\n",
+				__func__, dev_info->name, icodec->data->aic3254_id);
+		}
+	}
+
+	return rc;
+}
+#endif 
 
 module_param(msm_codec_i2s_slave_mode, bool, 0);
 MODULE_PARM_DESC(msm_codec_i2s_slave_mode, "Set MSM to I2S slave clock mode");

@@ -1,4 +1,4 @@
-/* Copyright (c) 2010-2012, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2010-2012, Code Aurora Forum. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -15,6 +15,7 @@
 #include <linux/platform_device.h>
 #include <linux/regulator/machine.h>
 #include <linux/regulator/consumer.h>
+#include <linux/mfd/pmic8058.h>
 #include <linux/msm_ion.h>
 #include <mach/irqs.h>
 #include <mach/dma.h>
@@ -29,12 +30,16 @@
 #include "clock-voter.h"
 #include "devices.h"
 #include "devices-msm8x60.h"
+#include <linux/mfd/pmic8058.h>
+#include <linux/pmic8058-xoadc.h>
+#include <linux/msm_adc.h>
 #include <linux/dma-mapping.h>
 #include <linux/irq.h>
 #include <linux/clk.h>
 #include <asm/hardware/gic.h>
 #include <asm/mach-types.h>
 #include <asm/clkdev.h>
+#include <mach/board-msm8660.h>
 #include <mach/msm_serial_hs_lite.h>
 #include <mach/msm_bus.h>
 #include <mach/msm_bus_board.h>
@@ -52,13 +57,13 @@
 #include <mach/rpm.h>
 #include <mach/board.h>
 #include <sound/apr_audio.h>
+#include <asm/mach/flash.h>
 #include "rpm_log.h"
 #include "rpm_stats.h"
 #include <mach/mpm.h>
 #include "msm_watchdog.h"
 #include <mach/iommu_domains.h>
 
-/* Address of GSBI blocks */
 #define MSM_GSBI1_PHYS	0x16000000
 #define MSM_GSBI2_PHYS	0x16100000
 #define MSM_GSBI3_PHYS	0x16200000
@@ -72,7 +77,6 @@
 #define MSM_GSBI11_PHYS	0x19B00000
 #define MSM_GSBI12_PHYS	0x19C00000
 
-/* GSBI QUPe devices */
 #define MSM_GSBI1_QUP_PHYS	0x16080000
 #define MSM_GSBI2_QUP_PHYS	0x16180000
 #define MSM_GSBI3_QUP_PHYS	0x16280000
@@ -86,7 +90,6 @@
 #define MSM_GSBI11_QUP_PHYS	0x19B80000
 #define MSM_GSBI12_QUP_PHYS	0x19C80000
 
-/* GSBI UART devices */
 #define MSM_UART1DM_PHYS    (MSM_GSBI6_PHYS + 0x40000)
 #define INT_UART1DM_IRQ     GSBI6_UARTDM_IRQ
 #define INT_UART2DM_IRQ     GSBI12_UARTDM_IRQ
@@ -95,15 +98,92 @@
 #define INT_UART3DM_IRQ     GSBI3_UARTDM_IRQ
 #define TCSR_BASE_PHYS      0x16b00000
 
-/* PRNG device */
 #define MSM_PRNG_PHYS		0x16C00000
 #define MSM_UART9DM_PHYS    (MSM_GSBI9_PHYS + 0x40000)
 #define INT_UART9DM_IRQ     GSBI9_UARTDM_IRQ
 
-struct platform_device msm_gpio_device = {
-	.name = "msmgpio",
-	.id = -1,
+struct flash_platform_data msm_nand_data = {
+	.parts		= NULL,
+	.nr_parts	= 0,
 };
+
+#ifdef CONFIG_SENSORS_MSM_ADC
+static void pmic8058_xoadc_mpp_config(void)
+{
+}
+
+static struct regulator *vreg_ldo18_adc;
+
+static int pmic8058_xoadc_vreg_config(int on)
+{
+	int rc;
+
+	if (on) {
+		rc = regulator_enable(vreg_ldo18_adc);
+		if (rc)
+			pr_err("%s: Enable of regulator ldo18_adc "
+						"failed\n", __func__);
+	} else {
+		rc = regulator_disable(vreg_ldo18_adc);
+		if (rc)
+			pr_err("%s: Disable of regulator ldo18_adc "
+						"failed\n", __func__);
+	}
+
+	return rc;
+}
+
+static int pmic8058_xoadc_vreg_setup(void)
+{
+	int rc;
+
+	vreg_ldo18_adc = regulator_get(NULL, "8058_l18");
+	if (IS_ERR(vreg_ldo18_adc)) {
+		printk(KERN_ERR "%s: vreg get failed (%ld)\n",
+			__func__, PTR_ERR(vreg_ldo18_adc));
+		rc = PTR_ERR(vreg_ldo18_adc);
+		goto fail;
+	}
+
+	rc = regulator_set_voltage(vreg_ldo18_adc, 2200000, 2200000);
+	if (rc) {
+		pr_err("%s: unable to set ldo18 voltage to 2.2V\n", __func__);
+		goto fail;
+	}
+
+	rc = regulator_enable(vreg_ldo18_adc);
+	if (rc) {
+		pr_err("%s: Enable of regulator ldo18_adc "
+					"failed\n", __func__);
+		goto fail;
+	}
+	return rc;
+fail:
+	regulator_put(vreg_ldo18_adc);
+	return rc;
+}
+
+static void pmic8058_xoadc_vreg_shutdown(void)
+{
+	regulator_put(vreg_ldo18_adc);
+}
+
+static struct adc_properties pm8058_xoadc_data = {
+	.adc_reference          = 2200, 
+	.bitresolution         = 15,
+	.bipolar                = 0,
+	.conversiontime         = 54,
+};
+
+struct xoadc_platform_data pm8058_xoadc_pdata = {
+	.xoadc_prop = &pm8058_xoadc_data,
+	.xoadc_mpp_config = pmic8058_xoadc_mpp_config,
+	.xoadc_vreg_set = pmic8058_xoadc_vreg_config,
+	.xoadc_num = XOADC_PMIC_0,
+	.xoadc_vreg_setup = pmic8058_xoadc_vreg_setup,
+	.xoadc_vreg_shutdown = pmic8058_xoadc_vreg_shutdown,
+};
+#endif
 
 static void charm_ap2mdm_kpdpwr_on(void)
 {
@@ -128,25 +208,19 @@ static void charm_ap2mdm_kpdpwr_off(void)
 		pr_err("%s: MDM2AP_STATUS never went low. Doing a hard reset \
 			of the charm modem.\n", __func__);
 		gpio_direction_output(AP2MDM_PMIC_RESET_N, 1);
-		/*
-		* Currently, there is a debounce timer on the charm PMIC. It is
-		* necessary to hold the AP2MDM_PMIC_RESET low for ~3.5 seconds
-		* for the reset to fully take place. Sleep here to ensure the
-		* reset has occured before the function exits.
-		*/
 		msleep(4000);
 		gpio_direction_output(AP2MDM_PMIC_RESET_N, 0);
 	}
 }
 
 static struct resource charm_resources[] = {
-	/* MDM2AP_ERRFATAL */
+	
 	{
 		.start	= MSM_GPIO_TO_INT(MDM2AP_ERRFATAL),
 		.end	= MSM_GPIO_TO_INT(MDM2AP_ERRFATAL),
 		.flags = IORESOURCE_IRQ,
 	},
-	/* MDM2AP_STATUS */
+	
 	{
 		.start	= MSM_GPIO_TO_INT(MDM2AP_STATUS),
 		.end	= MSM_GPIO_TO_INT(MDM2AP_STATUS),
@@ -254,7 +328,7 @@ static struct resource msm_uart1_dm_resources[] = {
 		.flags = IORESOURCE_IRQ,
 	},
 	{
-		/* GSBI6 is UARTDM1 */
+		
 		.start = MSM_GSBI6_PHYS,
 		.end   = MSM_GSBI6_PHYS + 4 - 1,
 		.name  = "gsbi_resource",
@@ -327,7 +401,7 @@ static struct resource msm_uart12_dm_resources[] = {
 		.flags = IORESOURCE_IRQ,
 	},
 	{
-		/* GSBI 12 is UARTDM2 */
+		
 		.start = MSM_GSBI12_PHYS,
 		.end   = MSM_GSBI12_PHYS + PAGE_SIZE - 1,
 		.name  = "gsbi_resource",
@@ -363,7 +437,7 @@ static struct resource msm_uart_gsbi9_resources[] = {
 		.flags	= IORESOURCE_IRQ,
 	},
 	{
-		/* GSBI 9 is UART_GSBI9 */
+		
 		.start	= MSM_GSBI9_PHYS,
 		.end	= MSM_GSBI9_PHYS + PAGE_SIZE - 1,
 		.name	= "gsbi_resource",
@@ -433,6 +507,51 @@ static struct resource gsbi4_qup_i2c_resources[] = {
 		.end	= GSBI4_QUP_IRQ,
 		.flags	= IORESOURCE_IRQ,
 	},
+	{
+		.name	= "i2c_clk",
+		.start	= 48,
+		.end	= 48,
+		.flags	= IORESOURCE_IO,
+	},
+	{
+		.name	= "i2c_sda",
+		.start	= 47,
+		.end	= 47,
+		.flags	= IORESOURCE_IO,
+	},
+};
+
+static struct resource gsbi5_qup_i2c_resources[] = {
+	{
+		.name   = "qup_phys_addr",
+		.start  = MSM_GSBI5_QUP_PHYS,
+		.end    = MSM_GSBI5_QUP_PHYS + SZ_4K - 1,
+		.flags  = IORESOURCE_MEM,
+	},
+	{
+		.name   = "gsbi_qup_i2c_addr",
+		.start  = MSM_GSBI5_PHYS,
+		.end    = MSM_GSBI5_PHYS + 4 - 1,
+		.flags  = IORESOURCE_MEM,
+	},
+	{
+		.name   = "qup_err_intr",
+		.start  = GSBI5_QUP_IRQ,
+		.end    = GSBI5_QUP_IRQ,
+		.flags  = IORESOURCE_IRQ,
+	},
+	{
+		.name	= "i2c_clk",
+		.start	= 52,
+		.end	= 52,
+		.flags	= IORESOURCE_IO,
+	},
+	{
+		.name	= "i2c_sda",
+		.start	= 51,
+		.end	= 51,
+		.flags	= IORESOURCE_IO,
+	},
 };
 
 static struct resource gsbi7_qup_i2c_resources[] = {
@@ -487,6 +606,18 @@ static struct resource gsbi8_qup_i2c_resources[] = {
 		.end	= GSBI8_QUP_IRQ,
 		.flags	= IORESOURCE_IRQ,
 	},
+	{
+		.name	= "i2c_clk",
+		.start	= 65,
+		.end	= 65,
+		.flags	= IORESOURCE_IO,
+	},
+	{
+		.name	= "i2c_sda",
+		.start	= 64,
+		.end	= 64,
+		.flags	= IORESOURCE_IO,
+	},
 };
 
 static struct resource gsbi9_qup_i2c_resources[] = {
@@ -510,6 +641,39 @@ static struct resource gsbi9_qup_i2c_resources[] = {
 	},
 };
 
+static struct resource gsbi10_qup_i2c_resources[] = {
+	{
+		.name	= "qup_phys_addr",
+		.start	= MSM_GSBI10_QUP_PHYS,
+		.end	= MSM_GSBI10_QUP_PHYS + SZ_4K - 1,
+		.flags	= IORESOURCE_MEM,
+	},
+	{
+		.name	= "gsbi_qup_i2c_addr",
+		.start	= MSM_GSBI10_PHYS,
+		.end	= MSM_GSBI10_PHYS + 4 - 1,
+		.flags	= IORESOURCE_MEM,
+	},
+	{
+		.name	= "qup_err_intr",
+		.start	= GSBI10_QUP_IRQ,
+		.end	= GSBI10_QUP_IRQ,
+		.flags	= IORESOURCE_IRQ,
+	},
+	{
+		.name	= "i2c_clk",
+		.start	= 73,
+		.end	= 73,
+		.flags	= IORESOURCE_IO,
+	},
+	{
+		.name	= "i2c_sda",
+		.start	= 72,
+		.end	= 72,
+		.flags	= IORESOURCE_IO,
+	},
+};
+
 static struct resource gsbi12_qup_i2c_resources[] = {
 	{
 		.name	= "qup_phys_addr",
@@ -528,6 +692,18 @@ static struct resource gsbi12_qup_i2c_resources[] = {
 		.start	= GSBI12_QUP_IRQ,
 		.end	= GSBI12_QUP_IRQ,
 		.flags	= IORESOURCE_IRQ,
+	},
+	{
+		.name	= "i2c_clk",
+		.start	= 115,
+		.end	= 115,
+		.flags	= IORESOURCE_IO,
+	},
+	{
+		.name	= "i2c_sda",
+		.start	= 116,
+		.end	= 116,
+		.flags	= IORESOURCE_IO,
 	},
 };
 
@@ -695,7 +871,7 @@ struct platform_device msm_device_rng = {
 static struct resource kgsl_3d0_resources[] = {
 	{
 		.name = KGSL_3D0_REG_MEMORY,
-		.start = 0x04300000, /* GFX3D address */
+		.start = 0x04300000, 
 		.end = 0x0431ffff,
 		.flags = IORESOURCE_MEM,
 	},
@@ -758,7 +934,7 @@ struct platform_device msm_kgsl_3d0 = {
 static struct resource kgsl_2d0_resources[] = {
 	{
 		.name = KGSL_2D0_REG_MEMORY,
-		.start = 0x04100000, /* Z180 base address */
+		.start = 0x04100000, 
 		.end = 0x04100FFF,
 		.flags = IORESOURCE_MEM,
 	},
@@ -805,7 +981,7 @@ struct platform_device msm_kgsl_2d0 = {
 static struct resource kgsl_2d1_resources[] = {
 	{
 		.name = KGSL_2D1_REG_MEMORY,
-		.start = 0x04200000, /* Z180 device 1 base address */
+		.start = 0x04200000, 
 		.end =   0x04200FFF,
 		.flags = IORESOURCE_MEM,
 	},
@@ -849,12 +1025,6 @@ struct platform_device msm_kgsl_2d1 = {
 	},
 };
 
-/*
- * this a software workaround for not having two distinct board
- * files for 8660v1 and 8660v2. 8660v1 has a faulty 2d clock, and
- * this workaround detects the cpu version to tell if the kernel is on a
- * 8660v1, and should disable the 2d core. it is called from the board file
- */
 void __init msm8x60_check_2d_hardware(void)
 {
 	if ((SOCINFO_VERSION_MAJOR(socinfo_get_version()) == 1) &&
@@ -864,7 +1034,6 @@ void __init msm8x60_check_2d_hardware(void)
 	}
 }
 
-/* Use GSBI3 QUP for /dev/i2c-0 */
 struct platform_device msm_gsbi3_qup_i2c_device = {
 	.name		= "qup_i2c",
 	.id		= MSM_GSBI3_QUP_I2C_BUS_ID,
@@ -872,7 +1041,6 @@ struct platform_device msm_gsbi3_qup_i2c_device = {
 	.resource	= gsbi3_qup_i2c_resources,
 };
 
-/* Use GSBI4 QUP for /dev/i2c-1 */
 struct platform_device msm_gsbi4_qup_i2c_device = {
 	.name		= "qup_i2c",
 	.id		= MSM_GSBI4_QUP_I2C_BUS_ID,
@@ -880,7 +1048,13 @@ struct platform_device msm_gsbi4_qup_i2c_device = {
 	.resource	= gsbi4_qup_i2c_resources,
 };
 
-/* Use GSBI8 QUP for /dev/i2c-3 */
+struct platform_device msm_gsbi5_qup_i2c_device = {
+	.name           = "qup_i2c",
+	.id             = MSM_GSBI5_QUP_I2C_BUS_ID,
+	.num_resources  = ARRAY_SIZE(gsbi5_qup_i2c_resources),
+	.resource       = gsbi5_qup_i2c_resources,
+};
+
 struct platform_device msm_gsbi8_qup_i2c_device = {
 	.name		= "qup_i2c",
 	.id		= MSM_GSBI8_QUP_I2C_BUS_ID,
@@ -888,7 +1062,6 @@ struct platform_device msm_gsbi8_qup_i2c_device = {
 	.resource	= gsbi8_qup_i2c_resources,
 };
 
-/* Use GSBI9 QUP for /dev/i2c-2 */
 struct platform_device msm_gsbi9_qup_i2c_device = {
 	.name		= "qup_i2c",
 	.id		= MSM_GSBI9_QUP_I2C_BUS_ID,
@@ -896,7 +1069,6 @@ struct platform_device msm_gsbi9_qup_i2c_device = {
 	.resource	= gsbi9_qup_i2c_resources,
 };
 
-/* Use GSBI7 QUP for /dev/i2c-4 (Marimba) */
 struct platform_device msm_gsbi7_qup_i2c_device = {
 	.name		= "qup_i2c",
 	.id		= MSM_GSBI7_QUP_I2C_BUS_ID,
@@ -904,7 +1076,12 @@ struct platform_device msm_gsbi7_qup_i2c_device = {
 	.resource	= gsbi7_qup_i2c_resources,
 };
 
-/* Use GSBI12 QUP for /dev/i2c-5 (Sensors) */
+struct platform_device msm_gsbi10_qup_i2c_device = {
+	.name		= "qup_i2c",
+	.id		= MSM_GSBI10_QUP_I2C_BUS_ID,
+	.num_resources	= ARRAY_SIZE(gsbi10_qup_i2c_resources),
+	.resource	= gsbi10_qup_i2c_resources,
+};
 struct platform_device msm_gsbi12_qup_i2c_device = {
 	.name		= "qup_i2c",
 	.id		= MSM_GSBI12_QUP_I2C_BUS_ID,
@@ -947,7 +1124,23 @@ struct platform_device msm_device_ssbi_pmic2 = {
 #endif
 
 #ifdef CONFIG_I2C_SSBI
-/* CODEC SSBI on /dev/i2c-8 */
+#define MSM_SSBI2_PMIC2B_PHYS	0x00C00000
+static struct resource msm_ssbi2_resources[] = {
+	{
+		.name   = "ssbi_base",
+		.start	= MSM_SSBI2_PMIC2B_PHYS,
+		.end	= MSM_SSBI2_PMIC2B_PHYS + SZ_4K - 1,
+		.flags	= IORESOURCE_MEM,
+	},
+};
+
+struct platform_device msm_device_ssbi2 = {
+	.name		= "i2c_ssbi",
+	.id		= MSM_SSBI2_I2C_BUS_ID,
+	.num_resources	= ARRAY_SIZE(msm_ssbi2_resources),
+	.resource	= msm_ssbi2_resources,
+};
+
 #define MSM_SSBI3_PHYS  0x18700000
 static struct resource msm_ssbi3_resources[] = {
 	{
@@ -964,7 +1157,7 @@ struct platform_device msm_device_ssbi3 = {
 	.num_resources	= ARRAY_SIZE(msm_ssbi3_resources),
 	.resource	= msm_ssbi3_resources,
 };
-#endif /* CONFIG_I2C_SSBI */
+#endif 
 
 static struct resource gsbi1_qup_spi_resources[] = {
 	{
@@ -1023,7 +1216,6 @@ static struct resource gsbi1_qup_spi_resources[] = {
 	},
 };
 
-/* Use GSBI1 QUP for SPI-0 */
 struct platform_device msm_gsbi1_qup_spi_device = {
 	.name		= "spi_qsd",
 	.id		= 0,
@@ -1071,7 +1263,6 @@ static struct resource gsbi10_qup_spi_resources[] = {
 	},
 };
 
-/* Use GSBI10 QUP for SPI-1 */
 struct platform_device msm_gsbi10_qup_spi_device = {
 	.name		= "spi_qsd",
 	.id		= 1,
@@ -1096,242 +1287,232 @@ struct platform_device msm_gsbi10_qup_spi_device = {
 
 static struct resource resources_sdc1[] = {
 	{
-		.name	= "core_mem",
 		.start	= MSM_SDC1_BASE,
 		.end	= MSM_SDC1_DML_BASE - 1,
 		.flags	= IORESOURCE_MEM,
 	},
 	{
-		.name	= "core_irq",
 		.start	= SDC1_IRQ_0,
 		.end	= SDC1_IRQ_0,
 		.flags	= IORESOURCE_IRQ,
 	},
 #ifdef CONFIG_MMC_MSM_SPS_SUPPORT
 	{
-		.name   = "dml_mem",
+		.name   = "sdcc_dml_addr",
 		.start	= MSM_SDC1_DML_BASE,
 		.end	= MSM_SDC1_BAM_BASE - 1,
 		.flags	= IORESOURCE_MEM,
 	},
 	{
-		.name   = "bam_mem",
+		.name   = "sdcc_bam_addr",
 		.start	= MSM_SDC1_BAM_BASE,
 		.end	= MSM_SDC1_BAM_BASE + (2 * SZ_4K) - 1,
 		.flags	= IORESOURCE_MEM,
 	},
 	{
-		.name   = "bam_irq",
+		.name   = "sdcc_bam_irq",
 		.start	= SDC1_BAM_IRQ,
 		.end	= SDC1_BAM_IRQ,
 		.flags	= IORESOURCE_IRQ,
 	},
 #else
 	{
-		.name	= "dma_chnl",
+		.name	= "sdcc_dma_chnl",
 		.start	= DMOV_SDC1_CHAN,
 		.end	= DMOV_SDC1_CHAN,
 		.flags	= IORESOURCE_DMA,
 	},
 	{
-		.name	= "dma_crci",
+		.name	= "sdcc_dma_crci",
 		.start	= DMOV_SDC1_CRCI,
 		.end	= DMOV_SDC1_CRCI,
 		.flags	= IORESOURCE_DMA,
 	}
-#endif /* CONFIG_MMC_MSM_SPS_SUPPORT */
+#endif 
 };
 
 static struct resource resources_sdc2[] = {
 	{
-		.name	= "core_mem",
 		.start	= MSM_SDC2_BASE,
 		.end	= MSM_SDC2_DML_BASE - 1,
 		.flags	= IORESOURCE_MEM,
 	},
 	{
-		.name	= "core_irq",
 		.start	= SDC2_IRQ_0,
 		.end	= SDC2_IRQ_0,
 		.flags	= IORESOURCE_IRQ,
 	},
 #ifdef CONFIG_MMC_MSM_SPS_SUPPORT
 	{
-		.name   = "dml_mem",
+		.name   = "sdcc_dml_addr",
 		.start	= MSM_SDC2_DML_BASE,
 		.end	= MSM_SDC2_BAM_BASE - 1,
 		.flags	= IORESOURCE_MEM,
 	},
 	{
-		.name   = "bam_mem",
+		.name   = "sdcc_bam_addr",
 		.start	= MSM_SDC2_BAM_BASE,
 		.end	= MSM_SDC2_BAM_BASE + (2 * SZ_4K) - 1,
 		.flags	= IORESOURCE_MEM,
 	},
 	{
-		.name   = "bam_irq",
+		.name   = "sdcc_bam_irq",
 		.start	= SDC2_BAM_IRQ,
 		.end	= SDC2_BAM_IRQ,
 		.flags	= IORESOURCE_IRQ,
 	},
 #else
 	{
-		.name	= "dma_chnl",
+		.name	= "sdcc_dma_chnl",
 		.start	= DMOV_SDC2_CHAN,
 		.end	= DMOV_SDC2_CHAN,
 		.flags	= IORESOURCE_DMA,
 	},
 	{
-		.name	= "dma_crci",
+		.name	= "sdcc_dma_crci",
 		.start	= DMOV_SDC2_CRCI,
 		.end	= DMOV_SDC2_CRCI,
 		.flags	= IORESOURCE_DMA,
 	}
-#endif /* CONFIG_MMC_MSM_SPS_SUPPORT */
+#endif 
 };
 
 static struct resource resources_sdc3[] = {
 	{
-		.name	= "core_mem",
 		.start	= MSM_SDC3_BASE,
 		.end	= MSM_SDC3_DML_BASE - 1,
 		.flags	= IORESOURCE_MEM,
 	},
 	{
-		.name	= "core_irq",
 		.start	= SDC3_IRQ_0,
 		.end	= SDC3_IRQ_0,
 		.flags	= IORESOURCE_IRQ,
 	},
 #ifdef CONFIG_MMC_MSM_SPS_SUPPORT
 	{
-		.name   = "dml_mem",
+		.name   = "sdcc_dml_addr",
 		.start	= MSM_SDC3_DML_BASE,
 		.end	= MSM_SDC3_BAM_BASE - 1,
 		.flags	= IORESOURCE_MEM,
 	},
 	{
-		.name   = "bam_mem",
+		.name   = "sdcc_bam_addr",
 		.start	= MSM_SDC3_BAM_BASE,
 		.end	= MSM_SDC3_BAM_BASE + (2 * SZ_4K) - 1,
 		.flags	= IORESOURCE_MEM,
 	},
 	{
-		.name   = "bam_irq",
+		.name   = "sdcc_bam_irq",
 		.start	= SDC3_BAM_IRQ,
 		.end	= SDC3_BAM_IRQ,
 		.flags	= IORESOURCE_IRQ,
 	},
 #else
 	{
-		.name	= "dma_chnl",
+		.name	= "sdcc_dma_chnl",
 		.start	= DMOV_SDC3_CHAN,
 		.end	= DMOV_SDC3_CHAN,
 		.flags	= IORESOURCE_DMA,
 	},
 	{
-		.name	= "dma_crci",
+		.name	= "sdcc_dma_crci",
 		.start	= DMOV_SDC3_CRCI,
 		.end	= DMOV_SDC3_CRCI,
 		.flags	= IORESOURCE_DMA,
 	},
-#endif /* CONFIG_MMC_MSM_SPS_SUPPORT */
+#endif 
 };
 
 static struct resource resources_sdc4[] = {
 	{
-		.name	= "core_mem",
 		.start	= MSM_SDC4_BASE,
 		.end	= MSM_SDC4_DML_BASE - 1,
 		.flags	= IORESOURCE_MEM,
 	},
 	{
-		.name	= "core_irq",
 		.start	= SDC4_IRQ_0,
 		.end	= SDC4_IRQ_0,
 		.flags	= IORESOURCE_IRQ,
 	},
 #ifdef CONFIG_MMC_MSM_SPS_SUPPORT
 	{
-		.name   = "dml_mem",
+		.name   = "sdcc_dml_addr",
 		.start	= MSM_SDC4_DML_BASE,
 		.end	= MSM_SDC4_BAM_BASE - 1,
 		.flags	= IORESOURCE_MEM,
 	},
 	{
-		.name   = "bam_mem",
+		.name   = "sdcc_bam_addr",
 		.start	= MSM_SDC4_BAM_BASE,
 		.end	= MSM_SDC4_BAM_BASE + (2 * SZ_4K) - 1,
 		.flags	= IORESOURCE_MEM,
 	},
 	{
-		.name   = "bam_irq",
+		.name   = "sdcc_bam_irq",
 		.start	= SDC4_BAM_IRQ,
 		.end	= SDC4_BAM_IRQ,
 		.flags	= IORESOURCE_IRQ,
 	},
 #else
 	{
-		.name	= "dma_chnl",
+		.name	= "sdcc_dma_chnl",
 		.start	= DMOV_SDC4_CHAN,
 		.end	= DMOV_SDC4_CHAN,
 		.flags	= IORESOURCE_DMA,
 	},
 	{
-		.name	= "dma_crci",
+		.name	= "sdcc_dma_crci",
 		.start	= DMOV_SDC4_CRCI,
 		.end	= DMOV_SDC4_CRCI,
 		.flags	= IORESOURCE_DMA,
 	},
-#endif /* CONFIG_MMC_MSM_SPS_SUPPORT */
+#endif 
 };
 
 static struct resource resources_sdc5[] = {
 	{
-		.name	= "core_mem",
 		.start	= MSM_SDC5_BASE,
 		.end	= MSM_SDC5_DML_BASE - 1,
 		.flags	= IORESOURCE_MEM,
 	},
 	{
-		.name	= "core_irq",
 		.start	= SDC5_IRQ_0,
 		.end	= SDC5_IRQ_0,
 		.flags	= IORESOURCE_IRQ,
 	},
 #ifdef CONFIG_MMC_MSM_SPS_SUPPORT
 	{
-		.name   = "dml_mem",
+		.name   = "sdcc_dml_addr",
 		.start	= MSM_SDC5_DML_BASE,
 		.end	= MSM_SDC5_BAM_BASE - 1,
 		.flags	= IORESOURCE_MEM,
 	},
 	{
-		.name   = "bam_mem",
+		.name   = "sdcc_bam_addr",
 		.start	= MSM_SDC5_BAM_BASE,
 		.end	= MSM_SDC5_BAM_BASE + (2 * SZ_4K) - 1,
 		.flags	= IORESOURCE_MEM,
 	},
 	{
-		.name   = "bam_irq",
+		.name   = "sdcc_bam_irq",
 		.start	= SDC5_BAM_IRQ,
 		.end	= SDC5_BAM_IRQ,
 		.flags	= IORESOURCE_IRQ,
 	},
 #else
 	{
-		.name	= "dma_chnl",
+		.name	= "sdcc_dma_chnl",
 		.start	= DMOV_SDC5_CHAN,
 		.end	= DMOV_SDC5_CHAN,
 		.flags	= IORESOURCE_DMA,
 	},
 	{
-		.name	= "dma_crci",
+		.name	= "sdcc_dma_crci",
 		.start	= DMOV_SDC5_CRCI,
 		.end	= DMOV_SDC5_CRCI,
 		.flags	= IORESOURCE_DMA,
 	},
-#endif /* CONFIG_MMC_MSM_SPS_SUPPORT */
+#endif 
 };
 
 struct platform_device msm_device_sdc1 = {
@@ -1501,7 +1682,7 @@ struct platform_device msm_device_vpe = {
 #define TVENC_HW_BASE		0x04F00000
 #define MDP_HW_BASE		0x05100000
 
-static struct resource msm_mipi_dsi_resources[] = {
+static struct resource msm_mipi_dsi1_resources[] = {
 	{
 		.name   = "mipi_dsi",
 		.start  = MIPI_DSI_HW_BASE,
@@ -1515,11 +1696,11 @@ static struct resource msm_mipi_dsi_resources[] = {
 	},
 };
 
-static struct platform_device msm_mipi_dsi_device = {
+struct platform_device msm_mipi_dsi1_device = {
 	.name   = "mipi_dsi",
 	.id     = 1,
-	.num_resources  = ARRAY_SIZE(msm_mipi_dsi_resources),
-	.resource       = msm_mipi_dsi_resources,
+	.num_resources  = ARRAY_SIZE(msm_mipi_dsi1_resources),
+	.resource       = msm_mipi_dsi1_resources,
 };
 
 static struct resource msm_mdp_resources[] = {
@@ -1543,6 +1724,37 @@ static struct platform_device msm_mdp_device = {
 	.resource       = msm_mdp_resources,
 };
 #ifdef CONFIG_MSM_ROTATOR
+
+static struct msm_bus_vectors rotator_init_vectors[] = {
+	{
+		.src = MSM_BUS_MASTER_ROTATOR,
+		.dst = MSM_BUS_SLAVE_SMI,
+		.ab = 0,
+		.ib = 0,
+	},
+	{
+		.src = MSM_BUS_MASTER_ROTATOR,
+		.dst = MSM_BUS_SLAVE_EBI_CH0,
+		.ab = 0,
+		.ib = 0,
+	},
+};
+
+static struct msm_bus_vectors rotator_ui_vectors[] = {
+	{
+		.src = MSM_BUS_MASTER_ROTATOR,
+		.dst = MSM_BUS_SLAVE_SMI,
+		.ab  = 0,
+		.ib  = 0,
+	},
+	{
+		.src = MSM_BUS_MASTER_ROTATOR,
+		.dst = MSM_BUS_SLAVE_EBI_CH0,
+		.ab  = (1024 * 600 * 4 * 2 * 60),
+		.ib  = (1024 * 600 * 4 * 2 * 60 * 1.5),
+	},
+};
+
 static struct resource resources_msm_rotator[] = {
 	{
 		.start	= 0x04E00000,
@@ -1554,6 +1766,80 @@ static struct resource resources_msm_rotator[] = {
 		.end	= ROT_IRQ,
 		.flags	= IORESOURCE_IRQ,
 	},
+};
+
+static struct msm_bus_vectors rotator_vga_vectors[] = {
+	{
+		.src = MSM_BUS_MASTER_ROTATOR,
+		.dst = MSM_BUS_SLAVE_SMI,
+		.ab  = (640 * 480 * 2 * 2 * 30),
+		.ib  = (640 * 480 * 2 * 2 * 30 * 1.5),
+	},
+	{
+		.src = MSM_BUS_MASTER_ROTATOR,
+		.dst = MSM_BUS_SLAVE_EBI_CH0,
+		.ab  = (640 * 480 * 2 * 2 * 30),
+		.ib  = (640 * 480 * 2 * 2 * 30 * 1.5),
+	},
+};
+
+static struct msm_bus_vectors rotator_720p_vectors[] = {
+	{
+		.src = MSM_BUS_MASTER_ROTATOR,
+		.dst = MSM_BUS_SLAVE_SMI,
+		.ab  = (1280 * 736 * 2 * 2 * 30),
+		.ib  = (1280 * 736 * 2 * 2 * 30 * 1.5),
+	},
+	{
+		.src = MSM_BUS_MASTER_ROTATOR,
+		.dst = MSM_BUS_SLAVE_EBI_CH0,
+		.ab  = (1280 * 736 * 2 * 2 * 30),
+		.ib  = (1280 * 736 * 2 * 2 * 30 * 1.5),
+	},
+};
+
+static struct msm_bus_vectors rotator_1080p_vectors[] = {
+	{
+		.src = MSM_BUS_MASTER_ROTATOR,
+		.dst = MSM_BUS_SLAVE_SMI,
+		.ab  = (1920 * 1088 * 2 * 2 * 30),
+		.ib  = (1920 * 1088 * 2 * 2 * 30 * 1.5),
+	},
+	{
+		.src = MSM_BUS_MASTER_ROTATOR,
+		.dst = MSM_BUS_SLAVE_EBI_CH0,
+		.ab  = (1920 * 1088 * 2 * 2 * 30),
+		.ib  = (1920 * 1088 * 2 * 2 * 30 * 1.5),
+	},
+};
+
+static struct msm_bus_paths rotator_bus_scale_usecases[] = {
+	{
+		ARRAY_SIZE(rotator_init_vectors),
+		rotator_init_vectors,
+	},
+	{
+		ARRAY_SIZE(rotator_ui_vectors),
+		rotator_ui_vectors,
+	},
+	{
+		ARRAY_SIZE(rotator_vga_vectors),
+		rotator_vga_vectors,
+	},
+	{
+		ARRAY_SIZE(rotator_720p_vectors),
+		rotator_720p_vectors,
+	},
+	{
+		ARRAY_SIZE(rotator_1080p_vectors),
+		rotator_1080p_vectors,
+	},
+};
+
+struct msm_bus_scale_pdata rotator_bus_scale_pdata = {
+	rotator_bus_scale_usecases,
+	ARRAY_SIZE(rotator_bus_scale_usecases),
+	.name = "rotator",
 };
 
 static struct msm_rot_clocks rotator_clocks[] = {
@@ -1591,7 +1877,6 @@ struct platform_device msm_rotator_device = {
 #endif
 
 
-/* Sensors DSPS platform data */
 #ifdef CONFIG_MSM_DSPS
 
 #define PPSS_DSPS_TCM_CODE_BASE 0x12000000
@@ -1599,9 +1884,9 @@ struct platform_device msm_rotator_device = {
 #define PPSS_DSPS_TCM_BUF_BASE  0x12040000
 #define PPSS_DSPS_TCM_BUF_SIZE  0x4000
 #define PPSS_DSPS_PIPE_BASE     0x12800000
-#define PPSS_DSPS_PIPE_SIZE     0x0 /* 8660 V2 does not use PIPE memory */
+#define PPSS_DSPS_PIPE_SIZE     0x0 
 #define PPSS_DSPS_DDR_BASE      0x8fe00000
-#define PPSS_DSPS_DDR_SIZE      0x0 /* 8660 V2 does not use DDR memory */
+#define PPSS_DSPS_DDR_SIZE      0x0 
 #define PPSS_SMEM_BASE          0x40000000
 #define PPSS_SMEM_SIZE          0x4000
 #define PPSS_REG_PHYS_BASE	0x12080000
@@ -1618,7 +1903,7 @@ static void dsps_init1(struct msm_dsps_platform_data *data)
 {
 	int val;
 
-	/* route GSBI12 interrutps to DSPS */
+	
 	val = secure_readl(MSM_TCSR_BASE +  TCSR_GSBI_IRQ_MUX_SEL);
 	val &= ~GSBI_IRQ_MUX_SEL_MASK;
 	val |= GSBI_IRQ_MUX_SEL_DSPS;
@@ -1628,37 +1913,162 @@ static void dsps_init1(struct msm_dsps_platform_data *data)
 static struct dsps_clk_info dsps_clks[] = {
 	{
 		.name = "iface_clk",
-		.rate =	0, /* no rate just on/off */
+		.rate =	0, 
 	},
 	{
 		.name = "mem_clk",
-		.rate =	0, /* no rate just on/off */
+		.rate =	0, 
 	},
 	{
 		.name = "gsbi_qup_clk",
-		.rate =	24 * MHZ, /* See clk_tbl_gsbi_qup[] */
+		.rate =	24 * MHZ, 
 	},
 	{
 		.name = "dfab_dsps_clk",
-		.rate =	64 * MHZ, /* Same rate as USB. */
+		.rate =	64 * MHZ, 
 	}
 };
 
 static struct dsps_regulator_info dsps_regs[] = {
 	{
 		.name = "8058_l5",
-		.volt = 2850000, /* in uV */
+		.volt = 2850000, 
 	},
 	{
 		.name = "8058_s3",
-		.volt = 1800000, /* in uV */
+		.volt = 1800000, 
 	}
 };
 
-/*
- * Note: GPIOs field is	intialized in run-time at the function
- * msm8x60_init_dsps().
- */
+#if 0
+#if defined(CONFIG_I2C) && \
+	(defined(CONFIG_GPIO_SX150X) || defined(CONFIG_GPIO_SX150X_MODULE))
+
+struct pm8xxx_mpp_init_info {
+	unsigned			mpp;
+	struct pm8xxx_mpp_config_data	config;
+};
+
+#define PM8058_MPP_INIT(_mpp, _type, _level, _control) \
+{ \
+	.mpp	= PM8058_MPP_PM_TO_SYS(_mpp), \
+	.config	= { \
+		.type		= PM8XXX_MPP_TYPE_##_type, \
+		.level		= _level, \
+		.control	= PM8XXX_MPP_##_control, \
+	} \
+}
+
+#define PM8901_MPP_INIT(_mpp, _type, _level, _control) \
+{ \
+	.mpp	= PM8901_MPP_PM_TO_SYS(_mpp), \
+	.config	= { \
+		.type		= PM8XXX_MPP_TYPE_##_type, \
+		.level		= _level, \
+		.control	= PM8XXX_MPP_##_control, \
+	} \
+}
+
+#if 0
+static void pmic8058_xoadc_mpp_config(void)
+{
+	int rc, i;
+	struct pm8xxx_mpp_init_info xoadc_mpps[] = {
+		PM8058_MPP_INIT(XOADC_MPP_3, A_INPUT, PM8XXX_MPP_AIN_AMUX_CH5,
+							AOUT_CTRL_DISABLE),
+		PM8058_MPP_INIT(XOADC_MPP_5, A_INPUT, PM8XXX_MPP_AIN_AMUX_CH9,
+							AOUT_CTRL_DISABLE),
+		PM8058_MPP_INIT(XOADC_MPP_7, A_INPUT, PM8XXX_MPP_AIN_AMUX_CH6,
+							AOUT_CTRL_DISABLE),
+		PM8058_MPP_INIT(XOADC_MPP_8, A_INPUT, PM8XXX_MPP_AIN_AMUX_CH8,
+							AOUT_CTRL_DISABLE),
+		PM8058_MPP_INIT(XOADC_MPP_10, A_INPUT, PM8XXX_MPP_AIN_AMUX_CH7,
+							AOUT_CTRL_DISABLE),
+		PM8901_MPP_INIT(XOADC_MPP_4, D_OUTPUT, PM8901_MPP_DIG_LEVEL_S4,
+							DOUT_CTRL_LOW),
+	};
+
+	for (i = 0; i < ARRAY_SIZE(xoadc_mpps); i++) {
+		rc = pm8xxx_mpp_config(xoadc_mpps[i].mpp,
+					&xoadc_mpps[i].config);
+		if (rc) {
+			pr_err("%s: Config MPP %d of PM8058 failed\n",
+					__func__, xoadc_mpps[i].mpp);
+		}
+	}
+}
+
+#endif
+static struct regulator *vreg_ldo18_adc;
+
+static int pmic8058_xoadc_vreg_config(int on)
+{
+	int rc;
+
+	if (on) {
+		rc = regulator_enable(vreg_ldo18_adc);
+		if (rc)
+			pr_err("%s: Enable of regulator ldo18_adc "
+						"failed\n", __func__);
+	} else {
+		rc = regulator_disable(vreg_ldo18_adc);
+		if (rc)
+			pr_err("%s: Disable of regulator ldo18_adc "
+						"failed\n", __func__);
+	}
+
+	return rc;
+}
+
+static int pmic8058_xoadc_vreg_setup(void)
+{
+	int rc;
+
+	vreg_ldo18_adc = regulator_get(NULL, "8058_l18");
+	if (IS_ERR(vreg_ldo18_adc)) {
+		printk(KERN_ERR "%s: vreg get failed (%ld)\n",
+			__func__, PTR_ERR(vreg_ldo18_adc));
+		rc = PTR_ERR(vreg_ldo18_adc);
+		goto fail;
+	}
+
+	rc = regulator_set_voltage(vreg_ldo18_adc, 2200000, 2200000);
+	if (rc) {
+		pr_err("%s: unable to set ldo18 voltage to 2.2V\n", __func__);
+		goto fail;
+	}
+
+	return rc;
+fail:
+	regulator_put(vreg_ldo18_adc);
+	return rc;
+}
+
+static void pmic8058_xoadc_vreg_shutdown(void)
+{
+	regulator_put(vreg_ldo18_adc);
+}
+
+static struct adc_properties pm8058_xoadc_data = {
+	.adc_reference          = 2200, 
+	.bitresolution         = 15,
+	.bipolar                = 0,
+	.conversiontime         = 54,
+};
+
+struct xoadc_platform_data pm8058_xoadc_pdata = {
+	.xoadc_prop = &pm8058_xoadc_data,
+	.xoadc_mpp_config = pmic8058_xoadc_mpp_config,
+	.xoadc_vreg_set = pmic8058_xoadc_vreg_config,
+	.xoadc_num = XOADC_PMIC_0,
+	.xoadc_vreg_setup = pmic8058_xoadc_vreg_setup,
+	.xoadc_vreg_shutdown = pmic8058_xoadc_vreg_shutdown,
+};
+#endif
+
+#endif
+
+
 
 struct msm_dsps_platform_data msm_dsps_pdata = {
 	.clks = dsps_clks,
@@ -1699,7 +2109,7 @@ struct platform_device msm_dsps_device = {
 	.dev.platform_data = &msm_dsps_pdata,
 };
 
-#endif /* CONFIG_MSM_DSPS */
+#endif 
 
 #ifdef CONFIG_FB_MSM_TVOUT
 static struct resource msm_tvenc_resources[] = {
@@ -1768,7 +2178,7 @@ void __init msm_fb_register_device(char *name, void *data)
 	else if (!strncmp(name, "lcdc", 4))
 		msm_register_device(&msm_lcdc_device, data);
 	else if (!strncmp(name, "mipi_dsi", 8))
-		msm_register_device(&msm_mipi_dsi_device, data);
+		msm_register_device(&msm_mipi_dsi1_device, data);
 #ifdef CONFIG_FB_MSM_TVOUT
 	else if (!strncmp(name, "tvenc", 5))
 		msm_register_device(&msm_tvenc_device, data);
@@ -1803,16 +2213,29 @@ struct platform_device msm_device_otg = {
 	.resource	= resources_otg,
 };
 
+static struct resource resources_hsusb[] = {
+	{
+		.start	= 0x12500000,
+		.end	= 0x12500000 + SZ_1K - 1,
+		.flags	= IORESOURCE_MEM,
+	},
+	{
+		.start	= USB1_HS_IRQ,
+		.end	= USB1_HS_IRQ,
+		.flags	= IORESOURCE_IRQ,
+	},
+};
 static u64 dma_mask = 0xffffffffULL;
 struct platform_device msm_device_gadget_peripheral = {
 	.name		= "msm_hsusb",
 	.id		= -1,
+	.num_resources	= ARRAY_SIZE(resources_hsusb),
+	.resource	= resources_hsusb,
 	.dev		= {
 		.dma_mask 		= &dma_mask,
 		.coherent_dma_mask	= 0xffffffffULL,
 	},
 };
-#ifdef CONFIG_USB_EHCI_MSM_72K
 static struct resource resources_hsusb_host[] = {
 	{
 		.start	= 0x12500000,
@@ -1837,6 +2260,7 @@ struct platform_device msm_device_hsusb_host = {
 	},
 };
 
+#ifdef CONFIG_USB_EHCI_MSM_72K
 static struct platform_device *msm_host_devices[] = {
 	&msm_device_hsusb_host,
 };
@@ -1897,7 +2321,7 @@ static void tsif_init1(struct msm_tsif_platform_data *data)
 {
 	int val;
 
-	/* configure mux to use correct tsif instance */
+	
 	val = secure_readl(MSM_TCSR_BASE + TCSR_ADM_0_A_CRCI_MUX_SEL);
 	val |= 0x80000000;
 	secure_writel(val, MSM_TCSR_BASE + TCSR_ADM_0_A_CRCI_MUX_SEL);
@@ -1933,7 +2357,7 @@ static void tsif_init0(struct msm_tsif_platform_data *data)
 {
 	int val;
 
-	/* configure mux to use correct tsif instance */
+	
 	val = secure_readl(MSM_TCSR_BASE + TCSR_ADM_0_A_CRCI_MUX_SEL);
 	val &= 0x7FFFFFFF;
 	secure_writel(val, MSM_TCSR_BASE + TCSR_ADM_0_A_CRCI_MUX_SEL);
@@ -1993,18 +2417,9 @@ struct platform_device msm_device_smd = {
 };
 
 static struct msm_watchdog_pdata msm_watchdog_pdata = {
-	.pet_time = 10000,
-	.bark_time = 11000,
+	.pet_time = 8000,
+	.bark_time = 18000,
 	.has_secure = true,
-	.base = MSM_TMR0_BASE + WDT0_OFFSET,
-};
-
-static struct resource msm_watchdog_resources[] = {
-	{
-		.start	= WDT0_ACCSCSSNBARK_INT,
-		.end	= WDT0_ACCSCSSNBARK_INT,
-		.flags	= IORESOURCE_IRQ,
-	},
 };
 
 struct platform_device msm8660_device_watchdog = {
@@ -2013,8 +2428,6 @@ struct platform_device msm8660_device_watchdog = {
 	.dev = {
 		.platform_data = &msm_watchdog_pdata,
 	},
-	.num_resources	= ARRAY_SIZE(msm_watchdog_resources),
-	.resource	= msm_watchdog_resources,
 };
 
 static struct resource msm_dmov_resource_adm0[] = {
@@ -2071,7 +2484,6 @@ struct platform_device msm_device_dmov_adm1 = {
 	},
 };
 
-/* MSM Video core device */
 #ifdef CONFIG_MSM_BUS_SCALING
 static struct msm_bus_vectors vidc_init_vectors[] = {
 	{
@@ -2354,8 +2766,8 @@ static struct msm_rpm_log_platform_data msm_rpm_log_pdata = {
 		[MSM_RPM_LOG_PAGE_BUFFER]  = 0x00000CA0,
 	},
 	.phys_size = SZ_8K,
-	.log_len = 4096,		  /* log's buffer length in bytes */
-	.log_len_mask = (4096 >> 2) - 1,  /* length mask in units of u32 */
+	.log_len = 4096,		  
+	.log_len_mask = (4096 >> 2) - 1,  
 };
 
 struct platform_device msm8660_rpm_log_device = {
@@ -2741,6 +3153,7 @@ struct msm_rpm_platform_data msm8660_rpm_data __initdata = {
 		[MSM_RPM_PAGE_CTRL] = MSM_RPM_BASE + 0x400,
 		[MSM_RPM_PAGE_REQ] = MSM_RPM_BASE + 0x600,
 		[MSM_RPM_PAGE_ACK] = MSM_RPM_BASE + 0xa00,
+		[MSM_RPM_PAGE_STAT] = MSM_RPM_BASE + 0x3E04,
 	},
 	.irq_ack = RPM_SCSS_CPU0_GP_HIGH_IRQ,
 	.irq_err = RPM_SCSS_CPU0_GP_LOW_IRQ,
@@ -3001,47 +3414,67 @@ struct platform_device msm8660_rpm_device = {
 };
 
 struct msm_iommu_domain_name msm8660_iommu_ctx_names[] = {
-	/* Camera */
+	
+	{
+		.name = "vpe_src",
+		.domain = CAMERA_DOMAIN,
+	},
+	
+	{
+		.name = "vpe_dst",
+		.domain = CAMERA_DOMAIN,
+	},
+	
+	{
+		.name = "vfe_imgwr",
+		.domain = CAMERA_DOMAIN,
+	},
+	
+	{
+		.name = "vfe_misc",
+		.domain = CAMERA_DOMAIN,
+	},
+	
 	{
 		.name = "ijpeg_src",
 		.domain = CAMERA_DOMAIN,
 	},
-	/* Camera */
+	
 	{
 		.name = "ijpeg_dst",
 		.domain = CAMERA_DOMAIN,
 	},
-	/* Camera */
+	
 	{
 		.name = "jpegd_src",
 		.domain = CAMERA_DOMAIN,
 	},
-	/* Camera */
+	
 	{
 		.name = "jpegd_dst",
 		.domain = CAMERA_DOMAIN,
 	},
-	/* Rotator */
+	
 	{
 		.name = "rot_src",
 		.domain = ROTATOR_SRC_DOMAIN,
 	},
-	/* Rotator */
+	
 	{
 		.name = "rot_dst",
 		.domain = ROTATOR_SRC_DOMAIN,
 	},
-	/* Video */
+	
 	{
 		.name = "vcodec_a_mm1",
 		.domain = VIDEO_DOMAIN,
 	},
-	/* Video */
+	
 	{
 		.name = "vcodec_b_mm2",
 		.domain = VIDEO_DOMAIN,
 	},
-	/* Video */
+	
 	{
 		.name = "vcodec_a_stream",
 		.domain = VIDEO_DOMAIN,
@@ -3049,27 +3482,20 @@ struct msm_iommu_domain_name msm8660_iommu_ctx_names[] = {
 };
 
 static struct mem_pool msm8660_video_pools[] =  {
-	/*
-	 * Video hardware has the following requirements:
-	 * 1. All video addresses used by the video hardware must be at a higher
-	 *    address than video firmware address.
-	 * 2. Video hardware can only access a range of 256MB from the base of
-	 *    the video firmware.
-	*/
 	[VIDEO_FIRMWARE_POOL] =
-	/* Low addresses, intended for video firmware */
+	
 		{
-			.paddr	= SZ_128K,
-			.size	= SZ_16M - SZ_128K,
+			.paddr	= SZ_1M,
+			.size	= SZ_16M - SZ_1M,
 		},
 	[VIDEO_MAIN_POOL] =
-	/* Main video pool */
+	
 		{
 			.paddr	= SZ_16M,
 			.size	= SZ_256M - SZ_16M,
 		},
 	[GEN_POOL] =
-	/* Remaining address space up to 2G */
+	
 		{
 			.paddr	= SZ_256M,
 			.size	= SZ_2G - SZ_256M,
@@ -3078,28 +3504,28 @@ static struct mem_pool msm8660_video_pools[] =  {
 
 static struct mem_pool msm8660_camera_pools[] =  {
 	[GEN_POOL] =
-	/* One address space for camera */
+	
 		{
-			.paddr	= SZ_128K,
-			.size	= SZ_2G - SZ_128K,
+			.paddr	= SZ_1M,
+			.size	= SZ_2G - SZ_1M,
 		},
 };
 
 static struct mem_pool msm8660_display_pools[] =  {
 	[GEN_POOL] =
-	/* One address space for display */
+	
 		{
-			.paddr	= SZ_128K,
-			.size	= SZ_2G - SZ_128K,
+			.paddr	= SZ_1M,
+			.size	= SZ_2G - SZ_1M,
 		},
 };
 
 static struct mem_pool msm8660_rotator_pools[] =  {
 	[GEN_POOL] =
-	/* One address space for rotator */
+	
 		{
-			.paddr	= SZ_128K,
-			.size	= SZ_2G - SZ_128K,
+			.paddr	= SZ_1M,
+			.size	= SZ_2G - SZ_1M,
 		},
 };
 
@@ -3137,3 +3563,4 @@ struct platform_device msm8660_iommu_domain_device = {
 		.platform_data = &msm8660_iommu_domain_pdata,
 	}
 };
+

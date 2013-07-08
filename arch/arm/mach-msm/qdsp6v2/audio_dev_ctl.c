@@ -1,4 +1,4 @@
-/* Copyright (c) 2010-2012, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2010-2012, Code Aurora Forum. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -30,6 +30,12 @@
 #define  MAX(x, y) (((x) > (y)) ? (x) : (y))
 #endif
 
+#ifdef CONFIG_MACH_VILLEC2
+#undef pr_info
+#undef pr_err
+#define pr_info(fmt, ...) pr_aud_info(fmt, ##__VA_ARGS__)
+#define pr_err(fmt, ...) pr_aud_err(fmt, ##__VA_ARGS__)
+#endif
 
 static DEFINE_MUTEX(session_lock);
 static struct workqueue_struct *msm_reset_device_work_queue;
@@ -47,6 +53,11 @@ struct audio_dev_ctrl_state {
 
 static struct audio_dev_ctrl_state audio_dev_ctrl;
 struct event_listner event;
+
+#ifdef CONFIG_MACH_VILLEC2
+static int voc_rx_freq = 0;
+static int voc_tx_freq = 0;
+#endif
 
 struct session_freq {
 	int freq;
@@ -68,6 +79,9 @@ struct audio_routing_info {
 	int tx_mute;
 	int rx_mute;
 	int voice_state;
+#ifdef CONFIG_MACH_VILLEC2
+	int call_state;
+#endif
 	struct mutex copp_list_mutex;
 	struct mutex adm_mutex;
 };
@@ -252,6 +266,15 @@ int msm_get_voice_state(void)
 }
 EXPORT_SYMBOL(msm_get_voice_state);
 
+#ifdef CONFIG_MACH_VILLEC2
+int msm_get_call_state(void)
+{
+	pr_debug("call state %d\n", routing_info.call_state);
+	return routing_info.call_state;
+}
+EXPORT_SYMBOL(msm_get_call_state);
+#endif
+
 int msm_set_voice_mute(int dir, int mute, u32 session_id)
 {
 	pr_debug("dir %x mute %x\n", dir, mute);
@@ -288,11 +311,6 @@ void msm_snddev_register(struct msm_snddev_info *dev_info)
 	mutex_lock(&session_lock);
 	if (audio_dev_ctrl.num_dev < AUDIO_DEV_CTL_MAX_DEV) {
 		audio_dev_ctrl.devs[audio_dev_ctrl.num_dev] = dev_info;
-		/* roughly 0 DB for digital gain
-		 * If default gain is not desirable, it is expected that
-		 * application sets desired gain before activating sound
-		 * device
-		 */
 		dev_info->dev_volume = 75;
 		dev_info->sessions = 0x0;
 		dev_info->usage_count = 0;
@@ -339,7 +357,6 @@ unsigned short msm_snddev_route_dec(int popp_id)
 }
 EXPORT_SYMBOL(msm_snddev_route_dec);
 
-/*To check one->many case*/
 int msm_check_multicopp_per_stream(int session_id,
 				struct route_payload *payload)
 {
@@ -393,7 +410,7 @@ int msm_snddev_set_dec(int popp_id, int copp_id, int set,
 		memset(payload.copp_ids, COPP_IGNORE,
 				(sizeof(unsigned int) * AFE_MAX_PORTS));
 		num_copps = msm_check_multicopp_per_stream(popp_id, &payload);
-		/* Multiple streams per copp is handled, one stream at a time */
+		
 		rc = adm_matrix_map(popp_id, ADM_PATH_PLAYBACK, num_copps,
 					payload.copp_ids, copp_id);
 		if (rc < 0) {
@@ -427,7 +444,7 @@ int msm_snddev_set_dec(int popp_id, int copp_id, int set,
 	}
 
 	if (copp_id == VOICE_PLAYBACK_TX) {
-		/* Signal uplink playback. */
+		
 		rc = voice_start_playback(set);
 	}
 	mutex_unlock(&routing_info.adm_mutex);
@@ -652,11 +669,27 @@ EXPORT_SYMBOL(msm_snddev_get_enc_freq);
 
 int msm_get_voc_freq(int *tx_freq, int *rx_freq)
 {
+#ifndef CONFIG_MACH_VILLEC2
 	*tx_freq = routing_info.voice_tx_sample_rate;
 	*rx_freq = routing_info.voice_rx_sample_rate;
+#else
+	*tx_freq = (0 == voc_tx_freq ? routing_info.voice_tx_sample_rate
+				: voc_tx_freq);
+	*rx_freq = (0 == voc_rx_freq ? routing_info.voice_rx_sample_rate
+				: voc_rx_freq);
+#endif
 	return 0;
 }
 EXPORT_SYMBOL(msm_get_voc_freq);
+
+#ifdef CONFIG_MACH_VILLEC2
+void msm_set_voc_freq(int tx_freq, int rx_freq)
+{
+	voc_tx_freq = tx_freq;
+	voc_rx_freq = rx_freq;
+}
+EXPORT_SYMBOL(msm_set_voc_freq);
+#endif
 
 int msm_get_voc_route(u32 *rx_id, u32 *tx_id)
 {
@@ -1347,12 +1380,6 @@ struct miscdevice audio_dev_ctrl_misc = {
 	.fops	= &audio_dev_ctrl_fops,
 };
 
-/* session id is 64 bit routing mask per device
- * 0-15 for voice clients
- * 16-31 for Decoder clients
- * 32-47 for Encoder clients
- * 48-63 Do not care
- */
 void broadcast_event(u32 evt_id, u32 dev_id, u64 session_id)
 {
 	int clnt_id = 0, i;
@@ -1404,6 +1431,13 @@ void broadcast_event(u32 evt_id, u32 dev_id, u64 session_id)
 		}
 		clnt_id = callback->clnt_id;
 		memset(evt_payload, 0, sizeof(union auddev_evt_data));
+
+#ifdef CONFIG_MACH_VILLEC2
+		if (evt_id == AUDDEV_EVT_START_VOICE)
+			routing_info.call_state = 1;
+		if (evt_id == AUDDEV_EVT_END_VOICE)
+			routing_info.call_state = 0;
+#endif
 
 		if ((evt_id == AUDDEV_EVT_START_VOICE)
 			|| (evt_id == AUDDEV_EVT_END_VOICE)
@@ -1660,7 +1694,7 @@ void mixer_post_event(u32 evt_id, u32 id)
 
 	pr_debug("evt_id = %d\n", evt_id);
 	switch (evt_id) {
-	case AUDDEV_EVT_DEV_CHG_VOICE: /* Called from Voice_route */
+	case AUDDEV_EVT_DEV_CHG_VOICE: 
 		broadcast_event(AUDDEV_EVT_DEV_CHG_VOICE, id, SESSION_IGNORE);
 		break;
 	case AUDDEV_EVT_DEV_RDY:
@@ -1710,6 +1744,9 @@ static int __init audio_dev_ctrl_init(void)
 	audio_dev_ctrl.voice_tx_dev = NULL;
 	audio_dev_ctrl.voice_rx_dev = NULL;
 	routing_info.voice_state = VOICE_STATE_INVALID;
+#ifdef CONFIG_MACH_VILLEC2
+	routing_info.call_state = 0;
+#endif
 
 	mutex_init(&adm_tx_topology_tbl.lock);
 	mutex_init(&routing_info.copp_list_mutex);
